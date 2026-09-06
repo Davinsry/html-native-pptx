@@ -7,4 +7,5 @@ __pycache__/
 *.pptx
 coverage/
 probe.mjs
+convert-test.mjs
 
