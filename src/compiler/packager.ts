@@ -105,7 +105,7 @@ export async function compileSlideToPptx(
   // 4. Slides and Media
   const slidesFolder = pptFolder?.folder('slides');
   const slidesRelsFolder = slidesFolder?.folder('_rels');
-  const mediaFolder = pptFolder?.folder('media');
+  let mediaFolder: JSZip | null = null;
 
   let globalMediaId = 1;
   const usedImageExtensions = new Set<string>();
@@ -140,6 +140,9 @@ export async function compileSlideToPptx(
         const loaded = await loadImageData(node.content || '', options?.basePath);
         if (loaded) {
           const mediaFileName = `image${globalMediaId++}.${loaded.extension}`;
+          if (!mediaFolder) {
+            mediaFolder = pptFolder?.folder('media') || null;
+          }
           mediaFolder?.file(mediaFileName, loaded.data);
           usedImageExtensions.add(loaded.extension);
 
