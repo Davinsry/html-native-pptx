@@ -31,12 +31,17 @@ function compileRun(run: TextRun, fallbackFont: string, fallbackColor: string, f
   const b = run.bold ? ' b="1"' : ' b="0"';
   const i = run.italic ? ' i="1"' : ' i="0"';
   const u = run.underline ? ' u="sng"' : '';
+  // `spc` dalam perseratus poin, boleh negatif untuk merapatkan huruf.
+  const spc =
+    run.letterSpacing !== undefined && Math.round(run.letterSpacing * 100) !== 0
+      ? ` spc="${Math.round(run.letterSpacing * 100)}"`
+      : '';
   const strike = run.strikethrough ? ' strike="sngStrike"' : '';
   const text = escapeXml(run.content);
 
   return `
       <a:r>
-        <a:rPr${b}${i}${u}${strike} sz="${sz}">
+        <a:rPr${b}${i}${u}${strike}${spc} sz="${sz}">
           <a:solidFill>
             <a:srgbClr val="${color}"/>
           </a:solidFill>
@@ -53,13 +58,21 @@ function compileParagraph(
   fallbackSize: number
 ): string {
   const algn = mapAlign(para.align);
+
+  // Jarak baris ditulis sebagai persentase (1,0 -> 100000). Tanpa ini PowerPoint
+  // memakai bawaannya sendiri (sekitar 1,2) dan teks bertata-letak ketat meluber
+  // keluar dari kotak yang tingginya sudah dihitung persis dari browser.
+  const lnSpc =
+    para.lineHeight && para.lineHeight > 0
+      ? `<a:lnSpc><a:spcPct val="${Math.round(para.lineHeight * 100000)}"/></a:lnSpc>`
+      : '';
   const runsXml = para.runs
     .map((run) => compileRun(run, fallbackFont, fallbackColor, fallbackSize))
     .join('\n');
 
   return `
     <a:p>
-      <a:pPr algn="${algn}"/>
+      <a:pPr algn="${algn}">${lnSpc}</a:pPr>
       ${runsXml}
     </a:p>`.trim();
 }
@@ -72,6 +85,10 @@ export function compileTextShape(
   id: number,
   autofit: 'none' | 'shape' | 'text' = 'none'
 ): string {
+  // Teks yang di browser muat satu baris dipaksa tetap satu baris: kotaknya
+  // persis selebar teksnya, jadi selisih metrik sekecil apa pun akan
+  // membungkusnya dan merusak tata letak yang justru sedang dipertahankan.
+  const wrapMode = node.noWrap ? 'none' : 'square';
   const x = inchesToEmu(node.box.x);
   const y = inchesToEmu(node.box.y);
   const cx = inchesToEmu(node.box.w);
@@ -133,7 +150,7 @@ export function compileTextShape(
     <a:noFill/>
   </p:spPr>
   <p:txBody>
-    <a:bodyPr wrap="square" rtlCol="0" lIns="0" tIns="0" rIns="0" bIns="0">
+    <a:bodyPr wrap="${wrapMode}" rtlCol="0" lIns="0" tIns="0" rIns="0" bIns="0">
       ${autofitXml}
     </a:bodyPr>
     <a:lstStyle/>

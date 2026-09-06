@@ -1,10 +1,57 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
 import type { SlideIR } from '../types/ir.js';
 import type { ConvertOptions } from '../types/options.js';
 import { extractDomToSlideIR, type HarvestOptions } from './traverser.js';
 import { resolveAndEmbedFonts } from '../normalizer/fonts.js';
+
+
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+};
+
+/**
+ * Ganti src gambar lokal dengan data URI-nya.
+ *
+ * Hanya menyentuh path relatif yang benar-benar ada di bawah `basePath`; URL
+ * http(s), data URI, dan path yang tidak ditemukan dibiarkan apa adanya supaya
+ * kegagalan resolusi tidak pernah mengubah dokumen.
+ */
+function inlineLocalImages(html: string, basePath: string): string {
+  return html.replace(
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])([^"']+)\2/gi,
+    (whole, prefix: string, quote: string, src: string) => {
+      const trimmed = src.trim();
+      if (
+        trimmed.startsWith('data:') ||
+        trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://') ||
+        trimmed.startsWith('file://') ||
+        trimmed.startsWith('//')
+      ) {
+        return whole;
+      }
+      try {
+        const resolved = path.resolve(basePath, trimmed);
+        if (!fs.existsSync(resolved)) return whole;
+        const mime = IMAGE_MIME[path.extname(resolved).toLowerCase()];
+        if (!mime) return whole;
+        const data = fs.readFileSync(resolved).toString('base64');
+        return `${prefix}${quote}data:${mime};base64,${data}${quote}`;
+      } catch {
+        return whole;
+      }
+    }
+  );
+}
 
 export async function harvestHtmlToIR(
   htmlOrUrl: string,
@@ -60,6 +107,9 @@ export async function harvestHtmlToIR(
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
+          // Tanpa ini, gambar file:// menodai kanvas sehingga filter CSS tidak
+          // bisa dipanggang ke pikselnya dan logo berakhir tanpa warna aslinya.
+          '--allow-file-access-from-files',
         ],
       });
       shouldCloseBrowser = true;
@@ -79,7 +129,20 @@ export async function harvestHtmlToIR(
     if (isUrl) {
       await page.goto(contentToRender, { waitUntil: waitUntil as any, timeout });
     } else {
-      await page.setContent(contentToRender, { waitUntil: waitUntil as any, timeout });
+      // Gambar lokal disisipkan sebagai data URI sebelum halaman dibuat.
+      //
+      // Halaman hasil `setContent` bukan dokumen file://, dan Chromium menolak
+      // memuat subresource file:// dari sana -- `<base href="file://...">` pun
+      // tidak menolong: src-nya benar tapi gambarnya berakhir dalam keadaan
+      // "broken" dengan naturalWidth 0. Akibatnya apa pun yang butuh piksel
+      // aslinya di dalam halaman tidak bisa dikerjakan, termasuk memanggang
+      // filter CSS seperti `filter: brightness(0)` yang menghitamkan logo.
+      // Sebagai data URI, gambarnya sama-asal dengan dokumennya sehingga termuat
+      // penuh dan kanvasnya pun tidak ternoda.
+      const contentReady = effectiveBasePath
+        ? inlineLocalImages(contentToRender, effectiveBasePath)
+        : contentToRender;
+      await page.setContent(contentReady, { waitUntil: waitUntil as any, timeout });
     }
 
     // Ensure esbuild helper __name is defined in browser context

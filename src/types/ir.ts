@@ -62,6 +62,8 @@ export interface TextRun {
   italic?: boolean;
   underline?: boolean;
   strikethrough?: boolean;
+  /** Spasi antar huruf dalam poin; negatif merapatkan, seperti CSS letter-spacing. */
+  letterSpacing?: number;
 }
 
 /**
@@ -107,6 +109,9 @@ export interface IRNode {
 
   // Structured multi-run rich text paragraphs
   paragraphs?: ParagraphIR[];
+
+  /** Teksnya satu baris di browser; pembungkusan dimatikan agar tetap satu baris. */
+  noWrap?: boolean;
 
   // Nested elements (if grouped or container has nested AST)
   children?: IRNode[];

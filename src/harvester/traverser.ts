@@ -115,6 +115,131 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
   const rootW = rootRect.width > 0 ? rootRect.width : options.viewportWidth;
   const rootH = rootRect.height > 0 ? rootRect.height : options.viewportHeight;
 
+  // Ukuran font HARUS memakai skala yang sama dengan geometri.
+  //
+  // Kotak dinormalkan terhadap lebar root (`rect.width / rootW * SLIDE_W`),
+  // sedangkan font sebelumnya dikonversi px->pt pada 96 DPI tetap. Pada viewport
+  // 1863 px yang dipetakan ke slide 13,333 inci, kotaknya mengecil sekitar 1,46x
+  // sementara teksnya tidak -- sehingga setiap teks jadi 1,46x terlalu besar
+  // untuk kotaknya sendiri, membungkus ke baris baru, meluber, dan saling
+  // menabrak. Itu penyebab utama hasil pptx terlihat jauh berbeda dari HTML-nya.
+  //
+  // Dipakai skala LEBAR, bukan tinggi: pemenggalan baris ditentukan lebar, dan
+  // itu yang paling menentukan apakah tata letaknya masih menyerupai aslinya.
+  const PX_TO_PT = (SLIDE_W / rootW) * 72;
+
+  /**
+   * Lingkaran dan cincin yang digambar sebagai `radial-gradient`.
+   *
+   * Pola `radial-gradient(circle at X% Y%, warna 0 Rpx, transparan R+2px)`
+   * adalah cara paling lazim menggambar lingkaran lewat latar CSS -- bukan
+   * gradasi sungguhan, melainkan satu warna pekat dengan batas tegas. Traverser
+   * hanya membaca `backgroundColor`, jadi seluruh bentuk semacam ini hilang
+   * tanpa jejak; pada dek uji, lingkaran kuning besar beserta cincin oranyenya
+   * lenyap seluruhnya dari hasil.
+   *
+   * Yang dihasilkan di sini bentuk native, bukan gambar: pengguna tetap bisa
+   * menggeser dan mewarnainya di PowerPoint.
+   */
+  function splitTopLevel(input: string, sep: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = '';
+    for (const ch of input) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === sep && depth === 0) {
+        parts.push(current);
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) parts.push(current);
+    return parts;
+  }
+
+  interface GradientCircle {
+    cxPct: number;
+    cyPct: number;
+    radiusPx: number;
+    color: string;
+    opacity: number;
+    strokePx?: number;
+  }
+
+  function parseRadialCircles(backgroundImage: string): GradientCircle[] {
+    if (!backgroundImage || backgroundImage === 'none') return [];
+    const out: GradientCircle[] = [];
+
+    for (const layer of splitTopLevel(backgroundImage, ',')) {
+      const m = layer.trim().match(/^radial-gradient\((.*)\)$/s);
+      if (!m) continue;
+      const inner = m[1];
+      const parts = splitTopLevel(inner, ',');
+      if (parts.length < 2) continue;
+
+      const head = parts[0].trim();
+      const posMatch = head.match(/circle\s+at\s+([\d.]+)%\s+([\d.]+)%/);
+      if (!posMatch) continue;
+      const cxPct = parseFloat(posMatch[1]);
+      const cyPct = parseFloat(posMatch[2]);
+
+      // Chrome memecah sintaks dua-posisi menjadi perhentian berposisi tunggal:
+      //   `var(--sun) 0 200px`  ->  `rgb(...) 0px, rgb(...) 200px`
+      // jadi bentuknya dibaca apa adanya, bukan seperti yang ditulis penulis CSS.
+      const stops = parts.slice(1).map((raw) => {
+        const t = raw.trim();
+        const colorMatch = t.match(/^(rgba?\([^)]*\)|#[0-9a-fA-F]+|[a-zA-Z]+)/);
+        const color = colorMatch ? colorMatch[1] : '';
+        const posMatches = t.slice(color.length).match(/-?[\d.]+px/g) || [];
+        const parsed = parseColor(color);
+        // `alpha` boleh tidak ada pada warna pekat; anggap 1 supaya perhentian
+        // berwarna tidak salah dikira transparan.
+        const alpha = parsed ? (parsed.alpha === undefined ? 1 : parsed.alpha) : 0;
+        return {
+          pos: posMatches.length ? parseFloat(posMatches[0] as string) : null,
+          alpha,
+          hex: parsed ? parsed.hex : '',
+        };
+      });
+
+      // Deretan perhentian yang tidak transparan membentuk satu bidang warna.
+      // Yang dimulai dari radius 0 adalah cakram; yang dimulai di tengah adalah
+      // cincin, dengan tebal garis sebesar lebar deretan itu.
+      let i = 0;
+      while (i < stops.length) {
+        if (stops[i].alpha <= 0 || stops[i].pos === null) {
+          i++;
+          continue;
+        }
+        const mulai = stops[i].pos as number;
+        const warna = stops[i].hex;
+        const alpha = stops[i].alpha;
+        let j = i;
+        while (j + 1 < stops.length && stops[j + 1].alpha > 0 && stops[j + 1].pos !== null) {
+          j++;
+        }
+        const selesai = stops[j].pos as number;
+
+        if (mulai <= 0.5 && selesai > 0) {
+          out.push({ cxPct, cyPct, radiusPx: selesai, color: warna, opacity: alpha });
+        } else if (selesai > mulai) {
+          out.push({
+            cxPct,
+            cyPct,
+            radiusPx: (mulai + selesai) / 2,
+            color: warna,
+            opacity: alpha,
+            strokePx: selesai - mulai,
+          });
+        }
+        i = j + 1;
+      }
+    }
+    return out;
+  }
+
   // Extract paragraphs and text runs from a text block
   function collectParagraphs(
     parentEl: HTMLElement,
@@ -142,12 +267,16 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             currentRuns.push({
               content: normalized,
               fontFamily: cleanFontFamily(style.fontFamily),
-              fontSize: (parseFloat(style.fontSize) * 72) / DPI,
+              fontSize: parseFloat(style.fontSize) * PX_TO_PT,
               color: toHex(style.color) || '000000',
               bold: isBold(style.fontWeight),
               italic: style.fontStyle === 'italic' || style.fontStyle === 'oblique',
               underline: style.textDecorationLine?.includes('underline'),
               strikethrough: style.textDecorationLine?.includes('line-through'),
+              letterSpacing:
+                style.letterSpacing && style.letterSpacing !== 'normal'
+                  ? parseFloat(style.letterSpacing) * PX_TO_PT
+                  : undefined,
             });
           }
         }
@@ -296,6 +425,44 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     const zIndex =
       style.zIndex === 'auto' || !style.zIndex ? 0 : parseInt(style.zIndex, 10) || 0;
 
+    // Lingkaran/cincin yang digambar lewat radial-gradient pada latar elemen.
+    // Dikeluarkan sebelum kotaknya sendiri supaya tergambar di atasnya, sama
+    // seperti urutan lapisan latar di CSS.
+    for (const c of parseRadialCircles(style.backgroundImage)) {
+      const cxPx = (c.cxPct / 100) * rect.width;
+      const cyPx = (c.cyPct / 100) * rect.height;
+      const originX = rect.left - rootRect.left;
+      const originY = rect.top - rootRect.top;
+      const circleBox = {
+        x: ((originX + cxPx - c.radiusPx) / rootW) * SLIDE_W,
+        y: ((originY + cyPx - c.radiusPx) / rootH) * SLIDE_H,
+        w: ((c.radiusPx * 2) / rootW) * SLIDE_W,
+        h: ((c.radiusPx * 2) / rootH) * SLIDE_H,
+      };
+      if (circleBox.w <= 0 || circleBox.h <= 0) continue;
+
+      nodes.push({
+        id: nodeIdCounter++,
+        name: c.strokePx ? 'gradient-ring' : 'gradient-circle',
+        type: 'container',
+        box: circleBox,
+        zIndex,
+        shapeStyle: c.strokePx
+          ? {
+              // Cincin: tanpa isian, hanya garis setebal pita warnanya.
+              borderColor: c.color,
+              borderWidth: c.strokePx * PX_TO_PT,
+              radius: Math.min(circleBox.w, circleBox.h) * DPI / 2,
+            }
+          : {
+              fillColor: c.color,
+              fillOpacity: c.opacity < 1 ? c.opacity : undefined,
+              borderWidth: 0,
+              radius: Math.min(circleBox.w, circleBox.h) * DPI / 2,
+            },
+      });
+    }
+
     // 1. Jika elemen memiliki visual background atau 4 border yang sama
     if (hasBg || allBordersEqual) {
       nodes.push({
@@ -308,7 +475,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
           fillColor: bgParsed ? bgParsed.hex : undefined,
           fillOpacity: bgParsed?.alpha,
           borderColor: allBordersEqual ? btColor : undefined,
-          borderWidth: allBordersEqual ? (btW * 72) / DPI : 0,
+          borderWidth: allBordersEqual ? btW * PX_TO_PT : 0,
           radius: radiusPx,
         },
       });
@@ -377,7 +544,38 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     // 2. Jika elemen adalah Image <img>
     if (el.tagName === 'IMG') {
       const img = el as HTMLImageElement;
-      const imgSrc = img.getAttribute('src') || img.src;
+      let imgSrc = img.getAttribute('src') || img.src;
+
+      // Filter CSS dipanggang ke dalam pikselnya.
+      //
+      // PowerPoint tidak punya padanan `filter`, jadi berkas gambar mentahlah
+      // yang ditempel. Logo yang di HTML dihitamkan oleh
+      // `filter: grayscale(100%) brightness(0)` sebenarnya berkas PNG putih
+      // polos; tanpa dipanggang, hasilnya putih di atas latar terang -- ada di
+      // dalam berkas tapi tidak terlihat sama sekali, dan itu terbaca sebagai
+      // "logonya hilang".
+      const cssFilter = style.filter;
+      if (imgSrc && cssFilter && cssFilter !== 'none') {
+        try {
+          const w = img.naturalWidth || Math.round(rect.width);
+          const h = img.naturalHeight || Math.round(rect.height);
+          if (w > 0 && h > 0) {
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              (ctx as any).filter = cssFilter;
+              ctx.drawImage(img, 0, 0, w, h);
+              imgSrc = canvas.toDataURL('image/png');
+            }
+          }
+        } catch {
+          // Kanvas ternoda (gambar lintas-asal) atau filter tidak didukung:
+          // pakai berkas aslinya, lebih baik warnanya meleset daripada hilang.
+        }
+      }
+
       if (imgSrc) {
         nodes.push({
           id: nodeIdCounter++,
@@ -402,6 +600,18 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     if (hasText && (isExplicitTextBlock || isLeafText || hasOnlyInlineChildren)) {
       const textAlign = (style.textAlign as any) || 'left';
       const paragraphs = collectParagraphs(el, textAlign);
+
+      // Rasio, bukan piksel: OpenXML menyatakan jarak baris sebagai persentase
+      // ukuran font, jadi nilainya tetap benar berapa pun skala slidenya.
+      const fontPx = parseFloat(style.fontSize) || 0;
+      const lhRaw = style.lineHeight;
+      let lineRatio: number | undefined;
+      if (lhRaw && lhRaw !== 'normal' && fontPx > 0) {
+        const lhPx = parseFloat(lhRaw);
+        if (!isNaN(lhPx) && lhPx > 0) {
+          lineRatio = lhPx / fontPx;
+        }
+      }
 
       if (paragraphs.length > 0) {
         const primaryRun = paragraphs[0].runs[0];
@@ -457,7 +667,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
                     fillColor: childBg?.hex,
                     fillOpacity: childBg?.alpha,
                     borderColor: childBc,
-                    borderWidth: childBc ? (childBw * 72) / DPI : 0,
+                    borderWidth: childBc ? childBw * PX_TO_PT : 0,
                     radius: childRadius,
                   },
                 });
@@ -471,6 +681,27 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
         };
 
         extractInlineHighlights(el);
+
+        // Apakah browser membungkus teks ini melebihi pemenggalan yang memang
+        // ditulis penulisnya (<br> atau blok terpisah)?
+        //
+        // Diukur dari tinggi kotak dibagi tinggi baris, bukan dari
+        // Range.getClientRects yang menghitung per potongan teks -- satu baris
+        // berisi <b> di tengahnya sudah menghasilkan tiga rect dan salah dikira
+        // tiga baris.
+        //
+        // Kalau tidak ada pembungkusan tambahan, pembungkusan dimatikan di
+        // PowerPoint: kotak hasil panen persis selebar teksnya, jadi selisih
+        // metrik sekecil apa pun akan memaksa baris baru yang tidak ada di HTML.
+        const lineBoxPx = lineRatio && fontPx ? lineRatio * fontPx : fontPx * 1.2;
+        const visualLines =
+          lineBoxPx > 0 ? Math.round(rect.height / lineBoxPx) : paragraphs.length;
+        // Dibatasi pada teks pendek. Paragraf panjang memang dimaksudkan
+        // membungkus, dan mematikannya di sana membuat kalimat memanjang keluar
+        // tepi slide -- lebih buruk daripada masalah yang sedang diperbaiki.
+        // Yang benar-benar rawan adalah judul: kotaknya persis selebar teksnya.
+        const noWrapped =
+          visualLines <= paragraphs.length && content.replace(/\s+/g, ' ').length <= 60;
 
         nodes.push({
           id: nodeIdCounter++,
@@ -488,7 +719,10 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             underline: primaryRun.underline || false,
             align: textAlign,
           },
-          paragraphs,
+          noWrap: noWrapped || undefined,
+          paragraphs: lineRatio
+            ? paragraphs.map((p) => ({ ...p, lineHeight: lineRatio }))
+            : paragraphs,
         });
         return; // Text block selesai diproses
       }
