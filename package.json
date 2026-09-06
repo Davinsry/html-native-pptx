@@ -1,0 +1,67 @@
+{
+  "name": "html-native-pptx",
+  "version": "0.1.0",
+  "description": "Convert HTML/CSS layouts into native, fully-editable OpenXML PowerPoint (.pptx) presentations",
+  "author": "Davin Surya",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Davinsry/html-native-pptx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Davinsry/html-native-pptx/issues"
+  },
+  "homepage": "https://github.com/Davinsry/html-native-pptx#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "puppeteer": "^24.3.0",
+    "ttf2eot": "^3.1.0",
+    "xmlbuilder2": "^3.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "@types/ttf2eot": "^2.0.2",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "html",
+    "pptx",
+    "powerpoint",
+    "openxml",
+    "drawingml",
+    "converter",
+    "presentation",
+    "headless"
+  ]
+}

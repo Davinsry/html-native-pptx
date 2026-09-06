@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Modern 3-Card Architecture Slide</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 60px;
+      width: 1920px;
+      height: 1080px;
+      background-color: #0F172A;
+      font-family: Arial, sans-serif;
+      color: #FFFFFF;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    header {
+      margin-bottom: 20px;
+    }
+    .badge {
+      display: inline-block;
+      background-color: #0284C7;
+      color: #FFFFFF;
+      font-size: 18px;
+      font-weight: bold;
+      padding: 6px 16px;
+      border-radius: 20px;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 54px;
+      margin: 0 0 12px 0;
+      color: #F8FAFC;
+    }
+    p.subtitle {
+      font-size: 24px;
+      color: #94A3B8;
+      margin: 0;
+    }
+    .grid {
+      display: flex;
+      gap: 36px;
+      margin-top: 40px;
+    }
+    .card {
+      flex: 1;
+      background-color: #1E293B;
+      border: 2px solid #334155;
+      border-radius: 16px;
+      padding: 36px;
+      display: flex;
+      flex-direction: column;
+    }
+    .card.highlight {
+      border-color: #38BDF8;
+      background-color: #1E293B;
+    }
+    .card-num {
+      font-size: 20px;
+      font-weight: bold;
+      color: #38BDF8;
+      margin-bottom: 12px;
+    }
+    .card h2 {
+      font-size: 32px;
+      margin: 0 0 16px 0;
+      color: #F1F5F9;
+    }
+    .card p {
+      font-size: 20px;
+      line-height: 1.5;
+      color: #94A3B8;
+      margin: 0;
+    }
+    footer {
+      border-top: 1px solid #334155;
+      padding-top: 24px;
+      display: flex;
+      justify-content: space-between;
+      color: #64748B;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <header>
+      <div class="badge">NATIVE OPENXML COMPILER</div>
+      <h1>High-Performance Slide Generation</h1>
+      <p class="subtitle">Convert modern HTML/CSS layouts into editable vector PowerPoint presentations.</p>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-num">01 / HARVEST</div>
+        <h2>Headless Engine</h2>
+        <p>Chromium calculates modern CSS layout, flexbox, and typography with sub-pixel precision.</p>
+      </div>
+      <div class="card highlight">
+        <div class="card-num">02 / NORMALIZE</div>
+        <h2>AST IR Contract</h2>
+        <p>Decoupled intermediate representation maps CSS units to EMU and formats rich text runs.</p>
+      </div>
+      <div class="card">
+        <div class="card-num">03 / COMPILE</div>
+        <h2>OpenXML DrawingML</h2>
+        <p>Packages raw presentationML into an editable .pptx container without third-party runtimes.</p>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>html-native-pptx v0.1.0</span>
+    <span>Editable Vector Output</span>
+  </footer>
+</body>
+</html>
