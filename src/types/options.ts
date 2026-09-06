@@ -84,4 +84,12 @@ export interface ConvertOptions {
    * Defaults to process.cwd().
    */
   basePath?: string;
+
+  /**
+   * Text autofit behavior in PowerPoint.
+   * 'none' (default) generates <a:noAutofit/>
+   * 'shape' generates <a:spAutoFit/>
+   * 'text' generates <a:normAutofit/>
+   */
+  autofit?: 'none' | 'shape' | 'text';
 }

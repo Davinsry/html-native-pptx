@@ -1,4 +1,4 @@
-import type { IRNode, SlideIR, TextRun, ParagraphIR } from '../types/ir.js';
+import type { IRNode, SlideIR, TextRun, ParagraphIR, TextAlign } from '../types/ir.js';
 
 export interface HarvestOptions {
   selector?: string;
@@ -17,13 +17,12 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
   const SLIDE_W = is16_9 ? 13.333333 : 10;
   const SLIDE_H = 7.5;
 
-  const SCALE_X = SLIDE_W / (options.viewportWidth / DPI);
-  const SCALE_Y = SLIDE_H / (options.viewportHeight / DPI);
-
   const nodes: IRNode[] = [];
   let nodeIdCounter = 1;
 
-  function toHex(cssColor?: string): string | undefined {
+  function parseColor(
+    cssColor?: string
+  ): { hex: string; alpha?: number } | undefined {
     if (!cssColor) return undefined;
     const trimmed = cssColor.trim().toLowerCase();
     if (trimmed === 'transparent' || trimmed === 'rgba(0, 0, 0, 0)' || trimmed === 'none') {
@@ -40,24 +39,29 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
       const r = parseInt(rgbMatch[1], 10);
       const g = parseInt(rgbMatch[2], 10);
       const b = parseInt(rgbMatch[3], 10);
-      return ((1 << 24) + (r << 16) + (g << 8) + b)
+      const hex = ((1 << 24) + (r << 16) + (g << 8) + b)
         .toString(16)
         .slice(1)
         .toUpperCase();
+      return { hex, alpha: a < 1 ? a : undefined };
     }
 
     // Parse #hex
     if (trimmed.startsWith('#')) {
       const raw = trimmed.slice(1);
       if (raw.length === 3) {
-        return raw.split('').map((c) => c + c).join('').toUpperCase();
+        return { hex: raw.split('').map((c) => c + c).join('').toUpperCase() };
       }
       if (raw.length >= 6) {
-        return raw.slice(0, 6).toUpperCase();
+        return { hex: raw.slice(0, 6).toUpperCase() };
       }
     }
 
     return undefined;
+  }
+
+  function toHex(cssColor?: string): string | undefined {
+    return parseColor(cssColor)?.hex;
   }
 
   function cleanFontFamily(fontFamily: string): string {
@@ -72,9 +76,25 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
   }
 
   function isInlineFormattingTag(tagName: string): boolean {
-    return ['SPAN', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'A', 'CODE', 'MARK', 'SMALL'].includes(
-      tagName
-    );
+    return [
+      'SPAN',
+      'B',
+      'STRONG',
+      'I',
+      'EM',
+      'U',
+      'S',
+      'A',
+      'CODE',
+      'MARK',
+      'SMALL',
+      'BR',
+      'SUB',
+      'SUP',
+      'ABBR',
+      'CITE',
+      'TIME',
+    ].includes(tagName);
   }
 
   function isTextBlockTag(tagName: string): boolean {
@@ -95,9 +115,20 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
   const rootW = rootRect.width > 0 ? rootRect.width : options.viewportWidth;
   const rootH = rootRect.height > 0 ? rootRect.height : options.viewportHeight;
 
-  // Extract text runs from a text block
-  function collectTextRuns(parentEl: HTMLElement): TextRun[] {
-    const runs: TextRun[] = [];
+  // Extract paragraphs and text runs from a text block
+  function collectParagraphs(
+    parentEl: HTMLElement,
+    defaultAlign: TextAlign
+  ): ParagraphIR[] {
+    const rawParagraphs: TextRun[][] = [];
+    let currentRuns: TextRun[] = [];
+
+    function pushParagraph() {
+      if (currentRuns.length > 0) {
+        rawParagraphs.push(currentRuns);
+        currentRuns = [];
+      }
+    }
 
     function traverseNodes(node: Node) {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -105,27 +136,89 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
         if (text && text.length > 0) {
           const parent = node.parentElement || parentEl;
           const style = window.getComputedStyle(parent);
-          runs.push({
-            content: text,
-            fontFamily: cleanFontFamily(style.fontFamily),
-            fontSize: (parseFloat(style.fontSize) * 72) / DPI,
-            color: toHex(style.color) || '000000',
-            bold: isBold(style.fontWeight),
-            italic: style.fontStyle === 'italic' || style.fontStyle === 'oblique',
-            underline: style.textDecorationLine?.includes('underline'),
-            strikethrough: style.textDecorationLine?.includes('line-through'),
-          });
+          // Normalize sequences of whitespace to a single space
+          const normalized = text.replace(/[\r\n\t ]+/g, ' ');
+          if (normalized.length > 0) {
+            currentRuns.push({
+              content: normalized,
+              fontFamily: cleanFontFamily(style.fontFamily),
+              fontSize: (parseFloat(style.fontSize) * 72) / DPI,
+              color: toHex(style.color) || '000000',
+              bold: isBold(style.fontWeight),
+              italic: style.fontStyle === 'italic' || style.fontStyle === 'oblique',
+              underline: style.textDecorationLine?.includes('underline'),
+              strikethrough: style.textDecorationLine?.includes('line-through'),
+            });
+          }
         }
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const el = node as HTMLElement;
+        const tagName = el.tagName.toUpperCase();
         const style = window.getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden') return;
-        Array.from(node.childNodes).forEach(traverseNodes);
+
+        // <br> starts a new paragraph
+        if (tagName === 'BR') {
+          pushParagraph();
+          return;
+        }
+
+        // Block elements start a new paragraph
+        const isBlock =
+          isTextBlockTag(tagName) ||
+          style.display === 'block' ||
+          style.display === 'flex' ||
+          style.display === 'grid';
+
+        if (isBlock) {
+          pushParagraph();
+          Array.from(node.childNodes).forEach(traverseNodes);
+          pushParagraph();
+        } else {
+          Array.from(node.childNodes).forEach(traverseNodes);
+        }
       }
     }
 
     Array.from(parentEl.childNodes).forEach(traverseNodes);
-    return runs;
+    pushParagraph();
+
+    // Normalize whitespace per paragraph:
+    // - Trim leading whitespace on the first non-empty run
+    // - Trim trailing whitespace on the last non-empty run
+    // - Filter out runs that became empty
+    const normalizedParagraphs: ParagraphIR[] = [];
+
+    for (const runs of rawParagraphs) {
+      for (let i = 0; i < runs.length; i++) {
+        runs[i].content = runs[i].content.replace(/^\s+/, '');
+        if (runs[i].content.length > 0) {
+          break;
+        }
+      }
+
+      for (let i = runs.length - 1; i >= 0; i--) {
+        runs[i].content = runs[i].content.replace(/\s+$/, '');
+        if (runs[i].content.length > 0) {
+          break;
+        }
+      }
+
+      const cleanRuns = runs.filter((r) => r.content.length > 0);
+      if (cleanRuns.length > 0) {
+        normalizedParagraphs.push({
+          align: defaultAlign,
+          runs: cleanRuns,
+        });
+      }
+    }
+
+    return normalizedParagraphs;
+  }
+
+  function collectTextRuns(parentEl: HTMLElement): TextRun[] {
+    const paras = collectParagraphs(parentEl, 'left');
+    return paras.flatMap((p) => p.runs);
   }
 
   function walk(el: HTMLElement) {
@@ -154,40 +247,145 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
       h: (rect.height / rootH) * SLIDE_H,
     };
 
-    const hasBg =
-      style.backgroundColor &&
-      style.backgroundColor !== 'transparent' &&
-      style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+    const bgParsed = parseColor(style.backgroundColor);
+    const hasBg = !!bgParsed;
 
-    const hasBorder =
-      parseFloat(style.borderWidth) > 0 && style.borderStyle !== 'none';
+    // Read borders per side
+    const btW = parseFloat(style.borderTopWidth) || 0;
+    const brW = parseFloat(style.borderRightWidth) || 0;
+    const bbW = parseFloat(style.borderBottomWidth) || 0;
+    const blW = parseFloat(style.borderLeftWidth) || 0;
 
-    // 1. Jika elemen memiliki visual background atau border -> Petakan sebagai Container
-    if (hasBg || hasBorder) {
+    const btColor = style.borderTopStyle !== 'none' && btW > 0 ? toHex(style.borderTopColor) : undefined;
+    const brColor = style.borderRightStyle !== 'none' && brW > 0 ? toHex(style.borderRightColor) : undefined;
+    const bbColor = style.borderBottomStyle !== 'none' && bbW > 0 ? toHex(style.borderBottomColor) : undefined;
+    const blColor = style.borderLeftStyle !== 'none' && blW > 0 ? toHex(style.borderLeftColor) : undefined;
+
+    const hasTop = btW > 0 && !!btColor;
+    const hasRight = brW > 0 && !!brColor;
+    const hasBottom = bbW > 0 && !!bbColor;
+    const hasLeft = blW > 0 && !!blColor;
+
+    const allBordersEqual =
+      hasTop &&
+      hasRight &&
+      hasBottom &&
+      hasLeft &&
+      btW === brW &&
+      brW === bbW &&
+      bbW === blW &&
+      btColor === brColor &&
+      brColor === bbColor &&
+      bbColor === blColor;
+
+    // Radius parsing (support percentage e.g. 50%)
+    let radiusPx = 0;
+    const rawRadius =
+      el.style.borderRadius && el.style.borderRadius.includes('%')
+        ? el.style.borderRadius
+        : style.borderRadius;
+    if (rawRadius && rawRadius.includes('%')) {
+      const pct = parseFloat(rawRadius);
+      if (!isNaN(pct)) {
+        radiusPx = (pct / 100) * Math.min(rect.width, rect.height);
+      }
+    } else {
+      radiusPx = parseFloat(style.borderRadius) || parseFloat(el.style.borderRadius) || 0;
+    }
+
+    const zIndex =
+      style.zIndex === 'auto' || !style.zIndex ? 0 : parseInt(style.zIndex, 10) || 0;
+
+    // 1. Jika elemen memiliki visual background atau 4 border yang sama
+    if (hasBg || allBordersEqual) {
       nodes.push({
         id: nodeIdCounter++,
         name: `${el.tagName.toLowerCase()}-box`,
         type: 'container',
         box,
+        zIndex,
         shapeStyle: {
-          fillColor: hasBg ? toHex(style.backgroundColor) : undefined,
-          borderColor: hasBorder ? toHex(style.borderColor) : undefined,
-          borderWidth: hasBorder ? (parseFloat(style.borderWidth) * 72) / DPI : 0,
-          radius: parseFloat(style.borderRadius) || 0,
+          fillColor: bgParsed ? bgParsed.hex : undefined,
+          fillOpacity: bgParsed?.alpha,
+          borderColor: allBordersEqual ? btColor : undefined,
+          borderWidth: allBordersEqual ? (btW * 72) / DPI : 0,
+          radius: radiusPx,
         },
       });
+    }
+
+    // Jika border hanya ada di sebagian sisi (atau berbeda-beda), hasilkan strip container per sisi
+    if (!allBordersEqual && (hasTop || hasRight || hasBottom || hasLeft)) {
+      if (hasTop && btColor) {
+        const hTop = (btW / rootH) * SLIDE_H;
+        nodes.push({
+          id: nodeIdCounter++,
+          name: `${el.tagName.toLowerCase()}-border-top`,
+          type: 'container',
+          box: { x: box.x, y: box.y, w: box.w, h: hTop },
+          zIndex,
+          shapeStyle: {
+            fillColor: btColor,
+            borderWidth: 0,
+          },
+        });
+      }
+      if (hasBottom && bbColor) {
+        const hBottom = (bbW / rootH) * SLIDE_H;
+        nodes.push({
+          id: nodeIdCounter++,
+          name: `${el.tagName.toLowerCase()}-border-bottom`,
+          type: 'container',
+          box: { x: box.x, y: box.y + box.h - hBottom, w: box.w, h: hBottom },
+          zIndex,
+          shapeStyle: {
+            fillColor: bbColor,
+            borderWidth: 0,
+          },
+        });
+      }
+      if (hasLeft && blColor) {
+        const wLeft = (blW / rootW) * SLIDE_W;
+        nodes.push({
+          id: nodeIdCounter++,
+          name: `${el.tagName.toLowerCase()}-border-left`,
+          type: 'container',
+          box: { x: box.x, y: box.y, w: wLeft, h: box.h },
+          zIndex,
+          shapeStyle: {
+            fillColor: blColor,
+            borderWidth: 0,
+          },
+        });
+      }
+      if (hasRight && brColor) {
+        const wRight = (brW / rootW) * SLIDE_W;
+        nodes.push({
+          id: nodeIdCounter++,
+          name: `${el.tagName.toLowerCase()}-border-right`,
+          type: 'container',
+          box: { x: box.x + box.w - wRight, y: box.y, w: wRight, h: box.h },
+          zIndex,
+          shapeStyle: {
+            fillColor: brColor,
+            borderWidth: 0,
+          },
+        });
+      }
     }
 
     // 2. Jika elemen adalah Image <img>
     if (el.tagName === 'IMG') {
       const img = el as HTMLImageElement;
-      if (img.src) {
+      const imgSrc = img.getAttribute('src') || img.src;
+      if (imgSrc) {
         nodes.push({
           id: nodeIdCounter++,
-          name: 'image',
+          name: img.getAttribute('alt') || 'image',
           type: 'image',
           box,
-          content: img.src,
+          zIndex,
+          content: imgSrc,
         });
         return; // Leaf image
       }
@@ -202,17 +400,85 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     const isLeafText = el.childElementCount === 0 && hasText;
 
     if (hasText && (isExplicitTextBlock || isLeafText || hasOnlyInlineChildren)) {
-      const runs = collectTextRuns(el);
-      if (runs.length > 0) {
-        const primaryRun = runs[0];
-        const textAlign = (style.textAlign as any) || 'left';
+      const textAlign = (style.textAlign as any) || 'left';
+      const paragraphs = collectParagraphs(el, textAlign);
+
+      if (paragraphs.length > 0) {
+        const primaryRun = paragraphs[0].runs[0];
+        const content = paragraphs
+          .map((p) => p.runs.map((r) => r.content).join(''))
+          .join('\n');
+
+        // Item 7: Before returning, inspect inline children with background or border
+        const extractInlineHighlights = (parent: HTMLElement) => {
+          Array.from(parent.children).forEach((child) => {
+            const childEl = child as HTMLElement;
+            const childStyle = window.getComputedStyle(childEl);
+            if (childStyle.display === 'none' || childStyle.visibility === 'hidden') return;
+
+            const childBg = parseColor(childStyle.backgroundColor);
+            const childBw = parseFloat(childStyle.borderWidth) || 0;
+            const childBc =
+              childStyle.borderStyle !== 'none' && childBw > 0
+                ? toHex(childStyle.borderColor)
+                : undefined;
+
+            if (childBg || (childBw > 0 && childBc)) {
+              const childRect = childEl.getBoundingClientRect();
+              if (childRect.width > 0 && childRect.height > 0) {
+                const childBox = {
+                  x: ((childRect.left - rootRect.left) / rootW) * SLIDE_W,
+                  y: ((childRect.top - rootRect.top) / rootH) * SLIDE_H,
+                  w: (childRect.width / rootW) * SLIDE_W,
+                  h: (childRect.height / rootH) * SLIDE_H,
+                };
+
+                let childRadius = 0;
+                const rawRadius =
+                  childEl.style.borderRadius && childEl.style.borderRadius.includes('%')
+                    ? childEl.style.borderRadius
+                    : childStyle.borderRadius;
+                if (rawRadius && rawRadius.includes('%')) {
+                  const pct = parseFloat(rawRadius);
+                  if (!isNaN(pct)) {
+                    childRadius = (pct / 100) * Math.min(childRect.width, childRect.height);
+                  }
+                } else {
+                  childRadius = parseFloat(rawRadius) || 0;
+                }
+
+                nodes.push({
+                  id: nodeIdCounter++,
+                  name: `${childEl.tagName.toLowerCase()}-highlight`,
+                  type: 'container',
+                  box: childBox,
+                  zIndex: zIndex - 0.1, // Behind the text shape
+                  shapeStyle: {
+                    fillColor: childBg?.hex,
+                    fillOpacity: childBg?.alpha,
+                    borderColor: childBc,
+                    borderWidth: childBc ? (childBw * 72) / DPI : 0,
+                    radius: childRadius,
+                  },
+                });
+              }
+            }
+
+            if (childEl.childElementCount > 0) {
+              extractInlineHighlights(childEl);
+            }
+          });
+        };
+
+        extractInlineHighlights(el);
 
         nodes.push({
           id: nodeIdCounter++,
           name: `${el.tagName.toLowerCase()}-text`,
           type: 'text',
           box,
-          content: el.textContent?.trim() || '',
+          zIndex,
+          content,
           textStyle: {
             fontFamily: primaryRun.fontFamily || 'Arial',
             fontSize: primaryRun.fontSize || 16,
@@ -222,12 +488,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             underline: primaryRun.underline || false,
             align: textAlign,
           },
-          paragraphs: [
-            {
-              align: textAlign,
-              runs,
-            },
-          ],
+          paragraphs,
         });
         return; // Text block selesai diproses
       }

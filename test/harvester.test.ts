@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { harvestHtmlToIR } from '../src/index.js';
+import { harvestHtmlToIR, type SlideIR } from '../src/index.js';
 
 describe('Harvester Module (Puppeteer)', () => {
   it(
@@ -85,6 +85,92 @@ describe('Harvester Module (Puppeteer)', () => {
       expect(highlightedRun).toBeDefined();
       expect(highlightedRun?.color).toBe('38BDF8');
       expect(highlightedRun?.bold).toBe(true);
+    },
+    30000
+  );
+
+  it(
+    'should harvest single-side borders, percentage radius, alpha opacity, br, and inline highlights',
+    async () => {
+      const advancedHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { margin: 0; background: #ffffff; }
+            .circle {
+              width: 120px;
+              height: 120px;
+              border-radius: 50%;
+              background-color: rgba(0, 0, 0, 0.35);
+              position: absolute;
+              top: 20px;
+              left: 20px;
+              z-index: 10;
+            }
+            .border-bottom-box {
+              width: 200px;
+              height: 100px;
+              border-bottom: 6px solid #ED0226;
+              position: absolute;
+              top: 200px;
+              left: 20px;
+            }
+            .multiline {
+              position: absolute;
+              top: 350px;
+              left: 20px;
+              width: 300px;
+              z-index: 5;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="circle"></div>
+          <div class="border-bottom-box"></div>
+          <div class="multiline">
+            Baris pertama<br>Baris kedua <span style="background-color: #FFFF00;">disorot</span>
+          </div>
+        </body>
+      </html>
+      `;
+
+      const slide = (await harvestHtmlToIR(advancedHtml, {
+        aspect: '16:9',
+        viewport: { width: 1920, height: 1080 },
+      })) as SlideIR;
+
+      // 1. Percentage border-radius (50% of 120px = 60px) & alpha (0.35) & zIndex (10)
+      const circleNode = slide.elements.find(
+        (el) => el.type === 'container' && el.shapeStyle?.radius === 60
+      );
+      expect(circleNode).toBeDefined();
+      expect(circleNode?.shapeStyle?.fillColor).toBe('000000');
+      expect(circleNode?.shapeStyle?.fillOpacity).toBeCloseTo(0.35, 2);
+      expect(circleNode?.zIndex).toBe(10);
+
+      // 2. Single-side border (border-bottom 6px solid #ED0226)
+      const bottomBorderStrip = slide.elements.find(
+        (el) => el.type === 'container' && el.shapeStyle?.fillColor === 'ED0226'
+      );
+      expect(bottomBorderStrip).toBeDefined();
+
+      // 3. Multi-line with <br> and normalized content
+      const textNode = slide.elements.find(
+        (el) => el.type === 'text' && el.content?.includes('Baris pertama')
+      );
+      expect(textNode).toBeDefined();
+      expect(textNode?.content).toContain('Baris pertama\nBaris kedua disorot');
+      expect(textNode?.paragraphs?.length).toBe(2);
+      expect(textNode?.paragraphs?.[0].runs[0].content).toBe('Baris pertama');
+      expect(textNode?.zIndex).toBe(5);
+
+      // 4. Inline highlight background container behind text
+      const highlightNode = slide.elements.find(
+        (el) => el.type === 'container' && el.shapeStyle?.fillColor === 'FFFF00'
+      );
+      expect(highlightNode).toBeDefined();
+      expect(highlightNode?.zIndex).toBeLessThan(textNode?.zIndex ?? 0);
     },
     30000
   );

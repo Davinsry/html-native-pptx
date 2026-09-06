@@ -67,7 +67,11 @@ function compileParagraph(
 /**
  * Compiles a text IRNode into an OpenXML <p:sp> textbox element with zero internal margins.
  */
-export function compileTextShape(node: IRNode, id: number): string {
+export function compileTextShape(
+  node: IRNode,
+  id: number,
+  autofit: 'none' | 'shape' | 'text' = 'none'
+): string {
   const x = inchesToEmu(node.box.x);
   const y = inchesToEmu(node.box.y);
   const cx = inchesToEmu(node.box.w);
@@ -104,6 +108,13 @@ export function compileTextShape(node: IRNode, id: number): string {
     );
   }
 
+  let autofitXml = '<a:noAutofit/>';
+  if (autofit === 'shape') {
+    autofitXml = '<a:spAutoFit/>';
+  } else if (autofit === 'text') {
+    autofitXml = '<a:normAutofit/>';
+  }
+
   return `
 <p:sp>
   <p:nvSpPr>
@@ -123,7 +134,7 @@ export function compileTextShape(node: IRNode, id: number): string {
   </p:spPr>
   <p:txBody>
     <a:bodyPr wrap="square" rtlCol="0" lIns="0" tIns="0" rIns="0" bIns="0">
-      <a:spAutoFit/>
+      ${autofitXml}
     </a:bodyPr>
     <a:lstStyle/>
     ${paragraphsXml}

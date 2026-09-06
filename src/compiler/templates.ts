@@ -156,9 +156,27 @@ ${slideRels}${fontRels}
 </Relationships>`;
 }
 
+export function createSlideRelsXml(
+  imageRels?: Array<{ id: string; target: string }>
+): string {
+  const extraRels = (imageRels || [])
+    .map(
+      (r) =>
+        `  <Relationship Id="${r.id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${r.target}"/>`
+    )
+    .join('\n');
+
+  const extraLine = extraRels ? '\n' + extraRels : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>${extraLine}
+</Relationships>`;
+}
+
 export function createContentTypesXml(
   slideCount: number = 1,
-  hasFonts: boolean = false
+  hasFonts: boolean = false,
+  imageExtensions: Iterable<string> = ['png', 'jpeg', 'jpg', 'gif', 'svg']
 ): string {
   const slideOverrides = Array.from({ length: slideCount }, (_, idx) => {
     return `  <Override PartName="/ppt/slides/slide${idx + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`;
@@ -168,15 +186,33 @@ export function createContentTypesXml(
     ? '  <Default Extension="fntdata" ContentType="application/x-fontdata"/>\n'
     : '';
 
+  const imgExts = new Set(imageExtensions);
+  imgExts.add('png');
+  imgExts.add('jpeg');
+  imgExts.add('jpg');
+
+  const imgExtensionsXml = Array.from(imgExts)
+    .map((ext) => {
+      const mime =
+        ext === 'svg'
+          ? 'image/svg+xml'
+          : ext === 'jpg'
+          ? 'image/jpeg'
+          : `image/${ext}`;
+      return `  <Default Extension="${ext}" ContentType="${mime}"/>\n`;
+    })
+    .join('');
+
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-${fontExtension}  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+${imgExtensionsXml}${fontExtension}  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
   <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
   <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
   <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
 ${slideOverrides}
 </Types>`;
 }
+
 

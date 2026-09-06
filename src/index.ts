@@ -8,6 +8,7 @@ export { extractDomToSlideIR } from './harvester/traverser.js';
 export { compileSlideToPptx } from './compiler/packager.js';
 export { compileContainerShape } from './compiler/shapes.js';
 export { compileTextShape } from './compiler/texts.js';
+export { compileImageShape, loadImageData } from './compiler/images.js';
 
 import type { SlideIR } from './types/ir.js';
 import type { ConvertOptions } from './types/options.js';
@@ -33,7 +34,10 @@ export async function convertHtmlToPptx(
   const slideIR = await harvestHtmlToIR(html, options);
 
   // 2. Compile SlideIR to OpenXML DrawingML presentation archive
-  const pptxBuffer = await compileSlideToPptx(slideIR);
+  const pptxBuffer = await compileSlideToPptx(slideIR, {
+    basePath: options?.basePath,
+    autofit: options?.autofit,
+  });
 
   return pptxBuffer;
 }

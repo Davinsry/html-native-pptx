@@ -109,8 +109,7 @@ export async function harvestHtmlToIR(
               for (const rule of Array.from(sheet.cssRules || [])) {
                 if (rule instanceof CSSFontFaceRule) {
                   const family = rule.style.fontFamily.replace(/^['"]+|['"]+$/g, '');
-                  const styleAny = rule.style as any;
-                  const srcVal = styleAny.src || rule.style.getPropertyValue('src') || '';
+                  const srcVal = rule.style.getPropertyValue('src') || '';
                   const srcMatch = srcVal.match(/url\((['"]?)(.*?)\1\)/);
                   if (srcMatch && srcMatch[2]) {
                     results.push({ typeface: family, src: srcMatch[2] });
@@ -139,8 +138,21 @@ export async function harvestHtmlToIR(
     if (slideSelector && slideElementsCount > 1) {
       const slides: SlideIR[] = [];
 
+      // Save original inline styles for all slides
+      await page.evaluate((sel: string) => {
+        const allSlides = document.querySelectorAll(sel);
+        allSlides.forEach((el) => {
+          const htmlEl = el as HTMLElement;
+          htmlEl.setAttribute('data-orig-display', htmlEl.style.display);
+          htmlEl.setAttribute('data-orig-visibility', htmlEl.style.visibility);
+          htmlEl.setAttribute('data-orig-position', htmlEl.style.position);
+          htmlEl.setAttribute('data-orig-left', htmlEl.style.left);
+          htmlEl.setAttribute('data-orig-top', htmlEl.style.top);
+        });
+      }, slideSelector);
+
       for (let i = 0; i < slideElementsCount; i++) {
-        // Activate slide i and hide others
+        // Activate slide i and hide others without overriding active slide's display
         await page.evaluate(
           ({ sel, activeIdx }: { sel: string; activeIdx: number }) => {
             const allSlides = document.querySelectorAll(sel);
@@ -148,12 +160,20 @@ export async function harvestHtmlToIR(
               const htmlEl = el as HTMLElement;
               if (idx === activeIdx) {
                 htmlEl.classList.add('active');
-                htmlEl.style.display = 'flex';
+                // Clear or restore inline display so stylesheet rules apply
+                htmlEl.style.display = htmlEl.getAttribute('data-orig-display') || '';
                 htmlEl.style.visibility = 'visible';
+                htmlEl.style.position = htmlEl.getAttribute('data-orig-position') || '';
+                htmlEl.style.left = htmlEl.getAttribute('data-orig-left') || '';
+                htmlEl.style.top = htmlEl.getAttribute('data-orig-top') || '';
                 htmlEl.setAttribute('data-current-harvest', 'true');
               } else {
                 htmlEl.classList.remove('active');
-                htmlEl.style.display = 'none';
+                // Hide offscreen without overriding display
+                htmlEl.style.visibility = 'hidden';
+                htmlEl.style.position = 'absolute';
+                htmlEl.style.left = '-99999px';
+                htmlEl.style.top = '-99999px';
                 htmlEl.removeAttribute('data-current-harvest');
               }
             });
@@ -171,6 +191,32 @@ export async function harvestHtmlToIR(
         const slideIR = await page.evaluate(extractDomToSlideIR, harvestOptions);
         slides.push(slideIR);
       }
+
+      // Restore all original inline styles
+      await page.evaluate((sel: string) => {
+        const allSlides = document.querySelectorAll(sel);
+        allSlides.forEach((el) => {
+          const htmlEl = el as HTMLElement;
+          const origDisplay = htmlEl.getAttribute('data-orig-display');
+          const origVisibility = htmlEl.getAttribute('data-orig-visibility');
+          const origPosition = htmlEl.getAttribute('data-orig-position');
+          const origLeft = htmlEl.getAttribute('data-orig-left');
+          const origTop = htmlEl.getAttribute('data-orig-top');
+
+          htmlEl.style.display = origDisplay ?? '';
+          htmlEl.style.visibility = origVisibility ?? '';
+          htmlEl.style.position = origPosition ?? '';
+          htmlEl.style.left = origLeft ?? '';
+          htmlEl.style.top = origTop ?? '';
+
+          htmlEl.removeAttribute('data-orig-display');
+          htmlEl.removeAttribute('data-orig-visibility');
+          htmlEl.removeAttribute('data-orig-position');
+          htmlEl.removeAttribute('data-orig-left');
+          htmlEl.removeAttribute('data-orig-top');
+          htmlEl.removeAttribute('data-current-harvest');
+        });
+      }, slideSelector);
 
       if (slides.length > 0) {
         slides[0].fonts = embeddedFonts;

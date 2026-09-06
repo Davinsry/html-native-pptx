@@ -1,5 +1,5 @@
 import type { IRNode } from '../types/ir.js';
-import { inchesToEmu } from '../normalizer/units.js';
+import { inchesToEmu, borderRadiusToGuide } from '../normalizer/units.js';
 import { UNITS } from '../types/ir.js';
 
 function escapeXml(unsafe: string): string {
@@ -28,13 +28,17 @@ export function compileContainerShape(node: IRNode, id: number): string {
   let avLst = '<a:avLst/>';
 
   if (shapeStyle.radius && shapeStyle.radius > 0) {
-    geometry = 'roundRect';
-    const minDimensionInches = Math.min(node.box.w, node.box.h);
-    if (minDimensionInches > 0) {
-      const radiusInches = shapeStyle.radius / UNITS.DPI;
-      const maxRadiusInches = minDimensionInches / 2;
-      const ratio = Math.min(1, Math.max(0, radiusInches / maxRadiusInches));
-      const adj = Math.round(ratio * 50000);
+    const wPx = node.box.w * UNITS.DPI;
+    const hPx = node.box.h * UNITS.DPI;
+    const minDimensionPx = Math.min(wPx, hPx);
+
+    // Kalau radius >= setengah sisi terpendek, pakai ellipse (lingkaran penuh)
+    if (minDimensionPx > 0 && shapeStyle.radius >= (minDimensionPx / 2) - 0.5) {
+      geometry = 'ellipse';
+      avLst = '<a:avLst/>';
+    } else {
+      geometry = 'roundRect';
+      const adj = borderRadiusToGuide(shapeStyle.radius, wPx, hPx);
       avLst = `<a:avLst><a:gd name="adj" fmla="val ${adj}"/></a:avLst>`;
     }
   }

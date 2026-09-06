@@ -15,9 +15,14 @@ import {
 } from './templates.js';
 import { compileContainerShape } from './shapes.js';
 import { compileTextShape } from './texts.js';
+import { compileImageShape, loadImageData } from './images.js';
+import { createSlideRelsXml } from './templates.js';
 
 export interface CompileOptions {
   fonts?: EmbeddedFontIR[];
+  basePath?: string;
+  warnings?: string[];
+  autofit?: 'none' | 'shape' | 'text';
 }
 
 /**
@@ -63,9 +68,6 @@ export async function compileSlideToPptx(
 
   const zip = new JSZip();
 
-  // 1. [Content_Types].xml
-  zip.file('[Content_Types].xml', createContentTypesXml(slideCount, hasFonts));
-
   // 2. _rels/.rels
   zip.folder('_rels')?.file('.rels', ROOT_RELS_XML);
 
@@ -100,19 +102,60 @@ export async function compileSlideToPptx(
   layoutFolder?.file('slideLayout1.xml', SLIDE_LAYOUT_XML);
   layoutFolder?.folder('_rels')?.file('slideLayout1.xml.rels', SLIDE_LAYOUT_RELS_XML);
 
-  // 4. Slides
+  // 4. Slides and Media
   const slidesFolder = pptFolder?.folder('slides');
   const slidesRelsFolder = slidesFolder?.folder('_rels');
+  const mediaFolder = pptFolder?.folder('media');
 
-  slides.forEach((slide, idx) => {
+  let globalMediaId = 1;
+  const usedImageExtensions = new Set<string>();
+  const warnings: string[] = options?.warnings || [];
+
+  for (let idx = 0; idx < slides.length; idx++) {
+    const slide = slides[idx];
     let shapeIdCounter = 2;
+    let slideRelIdCounter = 2;
     const shapesXmlArray: string[] = [];
+    const imageRels: Array<{ id: string; target: string }> = [];
 
-    for (const node of slide.elements) {
+    // Stable sort slide elements by zIndex ascending (preserving original DOM order for ties)
+    const sortedElements = slide.elements
+      .map((node, originalIndex) => ({ node, originalIndex }))
+      .sort((a, b) => {
+        const zA = a.node.zIndex ?? 0;
+        const zB = b.node.zIndex ?? 0;
+        if (zA !== zB) {
+          return zA - zB;
+        }
+        return a.originalIndex - b.originalIndex;
+      })
+      .map((item) => item.node);
+
+    for (const node of sortedElements) {
       if (node.type === 'container') {
         shapesXmlArray.push(compileContainerShape(node, shapeIdCounter++));
       } else if (node.type === 'text') {
-        shapesXmlArray.push(compileTextShape(node, shapeIdCounter++));
+        shapesXmlArray.push(compileTextShape(node, shapeIdCounter++, options?.autofit));
+      } else if (node.type === 'image') {
+        const loaded = await loadImageData(node.content || '', options?.basePath);
+        if (loaded) {
+          const mediaFileName = `image${globalMediaId++}.${loaded.extension}`;
+          mediaFolder?.file(mediaFileName, loaded.data);
+          usedImageExtensions.add(loaded.extension);
+
+          const relId = `rIdImg${slideRelIdCounter++}`;
+          imageRels.push({ id: relId, target: `../media/${mediaFileName}` });
+
+          shapesXmlArray.push(compileImageShape(node, shapeIdCounter++, relId));
+        } else {
+          const warnMsg = `Image node (id: ${node.id ?? 'unknown'}, name: "${node.name || 'unnamed'}") could not be loaded from "${node.content}". Shape was skipped.`;
+          console.warn(`[html-native-pptx] Warning: ${warnMsg}`);
+          warnings.push(warnMsg);
+        }
+      } else {
+        const warnMsg = `Unsupported node type "${node.type}" (id: ${node.id ?? 'unknown'}, name: "${node.name || 'unnamed'}"). Shape was skipped.`;
+        console.warn(`[html-native-pptx] Warning: ${warnMsg}`);
+        warnings.push(warnMsg);
       }
     }
 
@@ -159,8 +202,11 @@ export async function compileSlideToPptx(
 </p:sld>`;
 
     slidesFolder?.file(`slide${idx + 1}.xml`, slideXml);
-    slidesRelsFolder?.file(`slide${idx + 1}.xml.rels`, SLIDE_RELS_XML);
-  });
+    slidesRelsFolder?.file(`slide${idx + 1}.xml.rels`, createSlideRelsXml(imageRels));
+  }
+
+  // 1. [Content_Types].xml
+  zip.file('[Content_Types].xml', createContentTypesXml(slideCount, hasFonts, usedImageExtensions));
 
   // 5. Generate PPTX buffer
   const buffer = await zip.generateAsync({
