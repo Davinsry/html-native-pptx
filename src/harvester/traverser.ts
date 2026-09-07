@@ -1,4 +1,4 @@
-import type { IRNode, SlideIR, TextRun, ParagraphIR, TextAlign, ShapeStyle } from '../types/ir.js';
+import type { IRNode, SlideIR, TextRun, ParagraphIR, TextAlign, ShapeStyle, TableIR, TableRowIR, TableCellIR, GradientFill, GradientStop } from '../types/ir.js';
 
 export interface HarvestOptions {
   selector?: string;
@@ -250,6 +250,72 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     return out;
   }
 
+  function parseLinearGradient(bg?: string): GradientFill | undefined {
+    if (!bg || bg === 'none') return undefined;
+    for (const part of splitTopLevel(bg, ',')) {
+      const m = part.trim().match(/^linear-gradient\((.*)\)$/is);
+      if (!m) continue;
+      const inner = m[1];
+      const args = splitTopLevel(inner, ',');
+      if (args.length < 2) continue;
+
+      let angle = 180; // default top to bottom in CSS
+      let startIndex = 0;
+
+      const firstArg = args[0].trim().toLowerCase();
+      if (firstArg.includes('deg')) {
+        angle = parseFloat(firstArg) || 180;
+        startIndex = 1;
+      } else if (firstArg.startsWith('to ')) {
+        const dir = firstArg.replace('to ', '').trim();
+        if (dir === 'top') angle = 0;
+        else if (dir === 'right') angle = 90;
+        else if (dir === 'bottom') angle = 180;
+        else if (dir === 'left') angle = 270;
+        else if (dir === 'top right' || dir === 'right top') angle = 45;
+        else if (dir === 'bottom right' || dir === 'right bottom') angle = 135;
+        else if (dir === 'bottom left' || dir === 'left bottom') angle = 225;
+        else if (dir === 'top left' || dir === 'left top') angle = 315;
+        startIndex = 1;
+      }
+
+      const stopArgs = args.slice(startIndex);
+      const stops: GradientStop[] = [];
+
+      stopArgs.forEach((raw, idx) => {
+        const t = raw.trim();
+        const colorMatch = t.match(/^(rgba?\([^)]*\)|#[0-9a-fA-F]+|[a-zA-Z]+)/);
+        if (!colorMatch) return;
+        const colorStr = colorMatch[1];
+        const rest = t.slice(colorStr.length).trim();
+        const parsed = parseColor(colorStr);
+        if (!parsed) return;
+
+        let pos = idx / Math.max(1, stopArgs.length - 1);
+        const pctMatch = rest.match(/([\d.]+)%/);
+        if (pctMatch) {
+          pos = parseFloat(pctMatch[1]) / 100;
+        }
+
+        stops.push({
+          position: Math.max(0, Math.min(1, pos)),
+          color: parsed.hex,
+          opacity: parsed.alpha,
+        });
+      });
+
+      if (stops.length > 0) {
+        return {
+          type: 'linear',
+          angle,
+          stops,
+        };
+      }
+    }
+    return undefined;
+  }
+
+
   // Extract paragraphs and text runs from a text block
   function collectParagraphs(
     parentEl: HTMLElement,
@@ -415,8 +481,109 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
       h: (rect.height / rootH) * SLIDE_H,
     };
 
+    const zIndex =
+      style.zIndex === 'auto' || !style.zIndex ? 0 : parseInt(style.zIndex, 10) || 0;
+
+    // Native Table handling (<table>)
+    if (tagName === 'TABLE') {
+      const trElements = Array.from(el.querySelectorAll('tr'));
+      if (trElements.length > 0) {
+        const rows: TableRowIR[] = [];
+        const colWidthsPx: number[] = [];
+
+        for (const tr of trElements) {
+          const trRect = tr.getBoundingClientRect();
+          const rowHInches = (trRect.height / rootH) * SLIDE_H;
+          const cellEls = Array.from(tr.querySelectorAll('th, td'));
+
+          const cells: TableCellIR[] = cellEls.map((td, colIdx) => {
+            const tdStyle = window.getComputedStyle(td);
+            const tdRect = td.getBoundingClientRect();
+            if (!colWidthsPx[colIdx] || tdRect.width > colWidthsPx[colIdx]) {
+              colWidthsPx[colIdx] = tdRect.width;
+            }
+
+            const cellBg = parseColor(tdStyle.backgroundColor);
+            const cellBorder = parseColor(tdStyle.borderColor || tdStyle.borderTopColor);
+            const cellBorderW = parseFloat(tdStyle.borderTopWidth) || 0;
+
+            const tdTextAlign = tdStyle.textAlign as TextAlign;
+            const tdAlign: TextAlign = ['left', 'center', 'right', 'justify'].includes(tdTextAlign) ? tdTextAlign : 'left';
+
+            const tdVAlign = tdStyle.verticalAlign;
+            let vAlign: 'top' | 'middle' | 'bottom' = 'middle';
+            if (tdVAlign === 'top') vAlign = 'top';
+            else if (tdVAlign === 'bottom') vAlign = 'bottom';
+
+            const textContent = td.textContent?.trim() || '';
+            const isTh = td.tagName.toUpperCase() === 'TH';
+            const cellFontFamily = cleanFontFamily(tdStyle.fontFamily);
+            const cellFontSize = (parseFloat(tdStyle.fontSize) || 14) * PX_TO_PT;
+            const cellTextColor = toHex(tdStyle.color) || '000000';
+            const cellBold = isTh || isBold(tdStyle.fontWeight);
+
+            const paragraphs: ParagraphIR[] = textContent ? [
+              {
+                align: tdAlign,
+                runs: [
+                  {
+                    content: textContent,
+                    fontFamily: cellFontFamily,
+                    fontSize: cellFontSize,
+                    color: cellTextColor,
+                    bold: cellBold,
+                    italic: tdStyle.fontStyle === 'italic',
+                  }
+                ]
+              }
+            ] : [];
+
+            return {
+              content: textContent,
+              paragraphs,
+              fillColor: cellBg?.hex,
+              fillOpacity: cellBg?.alpha,
+              borderColor: cellBorder?.hex,
+              borderWidth: cellBorderW * PX_TO_PT,
+              align: tdAlign,
+              verticalAlign: vAlign,
+              colSpan: parseInt(td.getAttribute('colspan') || '1', 10) || 1,
+              rowSpan: parseInt(td.getAttribute('rowspan') || '1', 10) || 1,
+            };
+          });
+
+          rows.push({
+            height: Math.max(0.2, rowHInches),
+            cells,
+          });
+        }
+
+        const totalColWidthPx = colWidthsPx.reduce((a, b) => a + (b || 1), 0) || 1;
+        const columns = colWidthsPx.map((wPx) => ({
+          width: ((wPx || 1) / totalColWidthPx) * box.w,
+        }));
+
+        nodes.push({
+          id: nodeIdCounter++,
+          name: `table-${nodeIdCounter}`,
+          type: 'table',
+          box,
+          zIndex,
+          table: {
+            columns,
+            rows,
+          },
+        });
+        return;
+      }
+    }
+
+
     const bgParsed = parseColor(style.backgroundColor);
-    const hasBg = !!bgParsed;
+    const gradientParsed = parseLinearGradient(
+      style.backgroundImage || (style as any).background
+    );
+    const hasBg = !!bgParsed || !!gradientParsed;
 
     // Read borders per side
     const btW = parseFloat(style.borderTopWidth) || 0;
@@ -460,9 +627,6 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     } else {
       radiusPx = parseFloat(style.borderRadius) || parseFloat(el.style.borderRadius) || 0;
     }
-
-    const zIndex =
-      style.zIndex === 'auto' || !style.zIndex ? 0 : parseInt(style.zIndex, 10) || 0;
 
     // SVG Shape handling (rect, circle, ellipse, line, path, polygon, polyline)
     if (isSvg) {
@@ -614,8 +778,60 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
         return;
       }
 
+      if (tagName === 'PATH') {
+        const d = el.getAttribute('d');
+        const fillRaw = style.fill || el.getAttribute('fill');
+        const strokeRaw = style.stroke || el.getAttribute('stroke');
+        const strokeWidthRaw =
+          parseFloat(style.strokeWidth) ||
+          parseFloat(el.getAttribute('stroke-width') || '0') ||
+          0;
+
+        const fillParsed =
+          fillRaw && fillRaw !== 'none' ? parseColor(fillRaw) : undefined;
+        const strokeParsed =
+          strokeRaw && strokeRaw !== 'none' && strokeWidthRaw > 0
+            ? parseColor(strokeRaw)
+            : undefined;
+
+        if (d && d.trim().length > 0 && (fillParsed || strokeParsed)) {
+          const svgRoot = el.closest('svg');
+          let vbW = 100;
+          let vbH = 100;
+          if (svgRoot) {
+            const vbAttr = svgRoot.getAttribute('viewBox');
+            if (vbAttr) {
+              const vbParts = vbAttr.trim().split(/[\s,]+/);
+              if (vbParts.length >= 4) {
+                vbW = parseFloat(vbParts[2]) || 100;
+                vbH = parseFloat(vbParts[3]) || 100;
+              }
+            } else {
+              vbW = parseFloat(svgRoot.getAttribute('width') || '100') || 100;
+              vbH = parseFloat(svgRoot.getAttribute('height') || '100') || 100;
+            }
+          }
+
+          nodes.push({
+            id: nodeIdCounter++,
+            name: 'svg-path',
+            type: 'container',
+            box,
+            zIndex,
+            shapeStyle: {
+              customPath: d,
+              pathViewBox: { w: vbW, h: vbH },
+              fillColor: fillParsed?.hex,
+              fillOpacity: fillParsed?.alpha,
+              borderColor: strokeParsed?.hex,
+              borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+            },
+          });
+          return;
+        }
+      }
+
       if (
-        tagName === 'PATH' ||
         tagName === 'POLYGON' ||
         tagName === 'POLYLINE'
       ) {
@@ -736,6 +952,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
         shapeStyle: {
           fillColor: bgParsed ? bgParsed.hex : undefined,
           fillOpacity: bgParsed?.alpha,
+          gradient: gradientParsed,
           borderColor: allBordersEqual ? btColor : undefined,
           borderWidth: allBordersEqual ? btW * PX_TO_PT : 0,
           radius: radiusPx,

@@ -16,6 +16,7 @@ import {
 import { compileContainerShape } from './shapes.js';
 import { compileTextShape } from './texts.js';
 import { compileImageShape, loadImageData } from './images.js';
+import { compileTableGraphicFrame } from './tables.js';
 import { createSlideRelsXml } from './templates.js';
 
 export interface CompileOptions {
@@ -152,6 +153,8 @@ export async function compileSlideToPptx(
           console.warn(`[html-native-pptx] Warning: ${warnMsg}`);
           warnings.push(warnMsg);
         }
+      } else if (node.type === 'table') {
+        shapesXmlArray.push(compileTableGraphicFrame(node, shapeIdCounter++));
       } else {
         const warnMsg = `Unsupported node type "${node.type}" (id: ${node.id ?? 'unknown'}, name: "${node.name || 'unnamed'}"). Shape was skipped.`;
         console.warn(`[html-native-pptx] Warning: ${warnMsg}`);

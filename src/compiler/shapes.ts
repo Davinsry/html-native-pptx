@@ -1,4 +1,4 @@
-import type { IRNode } from '../types/ir.js';
+import type { IRNode, GradientStop, GradientFill } from '../types/ir.js';
 import { inchesToEmu, borderRadiusToGuide } from '../normalizer/units.js';
 import { UNITS } from '../types/ir.js';
 
@@ -9,6 +9,139 @@ function escapeXml(unsafe: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+/**
+ * Parses an SVG path data string (M... L... C... Q... Z) into OpenXML DrawingML <a:custGeom>.
+ */
+export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string {
+  const commandRegex = /([a-df-z])|([+-]?(?:\d*\.\d+|\d+)(?:[eE][+-]?\d+)?)/gi;
+  let match: RegExpExecArray | null;
+  const tokens: string[] = [];
+  while ((match = commandRegex.exec(d)) !== null) {
+    tokens.push(match[0]);
+  }
+
+  let i = 0;
+  let currentX = 0;
+  let currentY = 0;
+  let startX = 0;
+  let startY = 0;
+  let currentCommand = '';
+  const pathElements: string[] = [];
+
+  const round = (n: number) => Math.round(n * 100);
+
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (/^[a-df-z]$/i.test(token)) {
+      currentCommand = token;
+      i++;
+    }
+
+    const isRelative = currentCommand === currentCommand.toLowerCase();
+    const cmd = currentCommand.toUpperCase();
+
+    if (cmd === 'M') {
+      let x = parseFloat(tokens[i++]);
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) {
+        x += currentX;
+        y += currentY;
+      }
+      currentX = x;
+      currentY = y;
+      startX = x;
+      startY = y;
+      pathElements.push(`<a:moveTo><a:pt x="${round(x)}" y="${round(y)}"/></a:moveTo>`);
+      currentCommand = isRelative ? 'l' : 'L';
+    } else if (cmd === 'L') {
+      let x = parseFloat(tokens[i++]);
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) {
+        x += currentX;
+        y += currentY;
+      }
+      currentX = x;
+      currentY = y;
+      pathElements.push(`<a:lnTo><a:pt x="${round(x)}" y="${round(y)}"/></a:lnTo>`);
+    } else if (cmd === 'H') {
+      let x = parseFloat(tokens[i++]);
+      if (isRelative) x += currentX;
+      currentX = x;
+      pathElements.push(`<a:lnTo><a:pt x="${round(currentX)}" y="${round(currentY)}"/></a:lnTo>`);
+    } else if (cmd === 'V') {
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) y += currentY;
+      currentY = y;
+      pathElements.push(`<a:lnTo><a:pt x="${round(currentX)}" y="${round(currentY)}"/></a:lnTo>`);
+    } else if (cmd === 'C') {
+      let x1 = parseFloat(tokens[i++]);
+      let y1 = parseFloat(tokens[i++]);
+      let x2 = parseFloat(tokens[i++]);
+      let y2 = parseFloat(tokens[i++]);
+      let x = parseFloat(tokens[i++]);
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) {
+        x1 += currentX; y1 += currentY;
+        x2 += currentX; y2 += currentY;
+        x += currentX; y += currentY;
+      }
+      currentX = x;
+      currentY = y;
+      pathElements.push(`<a:cubicBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x2)}" y="${round(y2)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:cubicBezTo>`);
+    } else if (cmd === 'S') {
+      let x2 = parseFloat(tokens[i++]);
+      let y2 = parseFloat(tokens[i++]);
+      let x = parseFloat(tokens[i++]);
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) {
+        x2 += currentX; y2 += currentY;
+        x += currentX; y += currentY;
+      }
+      const x1 = currentX;
+      const y1 = currentY;
+      currentX = x;
+      currentY = y;
+      pathElements.push(`<a:cubicBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x2)}" y="${round(y2)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:cubicBezTo>`);
+    } else if (cmd === 'Q') {
+      let x1 = parseFloat(tokens[i++]);
+      let y1 = parseFloat(tokens[i++]);
+      let x = parseFloat(tokens[i++]);
+      let y = parseFloat(tokens[i++]);
+      if (isRelative) {
+        x1 += currentX; y1 += currentY;
+        x += currentX; y += currentY;
+      }
+      currentX = x;
+      currentY = y;
+      pathElements.push(`<a:quadBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:quadBezTo>`);
+    } else if (cmd === 'Z') {
+      currentX = startX;
+      currentY = startY;
+      pathElements.push('<a:close/>');
+      if (i < tokens.length && /^[z]$/i.test(tokens[i])) i++;
+    } else {
+      i++;
+    }
+  }
+
+  const w = round(vbW || 100);
+  const h = round(vbH || 100);
+
+  return `
+<a:custGeom>
+  <a:avLst/>
+  <a:gdLst/>
+  <a:ahLst/>
+  <a:cxnLst/>
+  <a:rect l="0" t="0" r="r" b="b"/>
+  <a:pathLst>
+    <a:path w="${w}" h="${h}">
+      ${pathElements.join('\n      ')}
+    </a:path>
+  </a:pathLst>
+</a:custGeom>`.trim();
 }
 
 /**
@@ -23,43 +156,74 @@ export function compileContainerShape(node: IRNode, id: number): string {
 
   const shapeStyle = node.shapeStyle || {};
 
-  // Geometry: check explicit geometry or border-radius
-  let geometry = shapeStyle.geometry || 'rect';
-  let avLst = '<a:avLst/>';
+  // Geometry: check customPath, explicit geometry, or border-radius
+  let geometryXml = '';
+  if (shapeStyle.customPath) {
+    const vbW = shapeStyle.pathViewBox?.w || 100;
+    const vbH = shapeStyle.pathViewBox?.h || 100;
+    geometryXml = parseSvgPathToDrawingMl(shapeStyle.customPath, vbW, vbH);
+  } else {
+    let geometry = shapeStyle.geometry || 'rect';
+    let avLst = '<a:avLst/>';
 
-  if (!shapeStyle.geometry && shapeStyle.radius && shapeStyle.radius > 0) {
-    const wPx = node.box.w * UNITS.DPI;
-    const hPx = node.box.h * UNITS.DPI;
-    const minDimensionPx = Math.min(wPx, hPx);
+    if (!shapeStyle.geometry && shapeStyle.radius && shapeStyle.radius > 0) {
+      const wPx = node.box.w * UNITS.DPI;
+      const hPx = node.box.h * UNITS.DPI;
+      const minDimensionPx = Math.min(wPx, hPx);
 
-    // Pakai ellipse HANYA jika bentuknya bujur sangkar / lingkaran penuh (w == h).
-    // Untuk tombol/badge kapsul (pill shape), gunakan roundRect dengan adj guide penuh.
-    const isSquare = Math.abs(wPx - hPx) <= 2;
-    if (isSquare && minDimensionPx > 0 && shapeStyle.radius >= (minDimensionPx / 2) - 0.5) {
-      geometry = 'ellipse';
-      avLst = '<a:avLst/>';
-    } else {
-      geometry = 'roundRect';
-      const adj = borderRadiusToGuide(shapeStyle.radius, wPx, hPx);
-      avLst = `<a:avLst><a:gd name="adj" fmla="val ${adj}"/></a:avLst>`;
+      const isSquare = Math.abs(wPx - hPx) <= 2;
+      if (isSquare && minDimensionPx > 0 && shapeStyle.radius >= (minDimensionPx / 2) - 0.5) {
+        geometry = 'ellipse';
+        avLst = '<a:avLst/>';
+      } else {
+        geometry = 'roundRect';
+        const adj = borderRadiusToGuide(shapeStyle.radius, wPx, hPx);
+        avLst = `<a:avLst><a:gd name="adj" fmla="val ${adj}"/></a:avLst>`;
+      }
     }
+
+    geometryXml = `<a:prstGeom prst="${geometry}">
+      ${avLst}
+    </a:prstGeom>`;
   }
 
-  // Fill
+  // Fill: check gradient or solid
   let fillXml = '<a:noFill/>';
-  if (geometry !== 'line' && shapeStyle.fillColor) {
-    const opacityVal =
-      shapeStyle.fillOpacity !== undefined && shapeStyle.fillOpacity < 1
-        ? `<a:alpha val="${Math.round(shapeStyle.fillOpacity * 100000)}"/>`
-        : '';
-    fillXml = `<a:solidFill><a:srgbClr val="${shapeStyle.fillColor}">${opacityVal}</a:srgbClr></a:solidFill>`;
+  if (shapeStyle.geometry !== 'line') {
+    if (shapeStyle.gradient && shapeStyle.gradient.stops.length > 0) {
+      const stopsXml = shapeStyle.gradient.stops
+        .map((s) => {
+          const posVal = Math.round(Math.min(1, Math.max(0, s.position)) * 100000);
+          const alphaVal =
+            s.opacity !== undefined && s.opacity < 1
+              ? `<a:alpha val="${Math.round(s.opacity * 100000)}"/>`
+              : '';
+          return `<a:gs pos="${posVal}"><a:srgbClr val="${s.color}">${alphaVal}</a:srgbClr></a:gs>`;
+        })
+        .join('');
+
+      if (shapeStyle.gradient.type === 'radial') {
+        fillXml = `<a:gradFill flip="none" rotWithShape="1"><a:gsLst>${stopsXml}</a:gsLst><a:path path="circle"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path></a:gradFill>`;
+      } else {
+        const cssAngle = shapeStyle.gradient.angle !== undefined ? shapeStyle.gradient.angle : 180;
+        const dmlDeg = ((cssAngle - 90) % 360 + 360) % 360;
+        const angVal = Math.round(dmlDeg * 60000);
+        fillXml = `<a:gradFill flip="none" rotWithShape="1"><a:gsLst>${stopsXml}</a:gsLst><a:lin ang="${angVal}" scaled="1"/></a:gradFill>`;
+      }
+    } else if (shapeStyle.fillColor) {
+      const opacityVal =
+        shapeStyle.fillOpacity !== undefined && shapeStyle.fillOpacity < 1
+          ? `<a:alpha val="${Math.round(shapeStyle.fillOpacity * 100000)}"/>`
+          : '';
+      fillXml = `<a:solidFill><a:srgbClr val="${shapeStyle.fillColor}">${opacityVal}</a:srgbClr></a:solidFill>`;
+    }
   }
 
   // Border (Line)
   let borderXml = '';
   if (shapeStyle.borderColor && shapeStyle.borderWidth && shapeStyle.borderWidth > 0) {
     const borderEmu = Math.round(shapeStyle.borderWidth * 12700); // 1 pt = 12,700 EMU
-    const capAttr = geometry === 'line' ? ' cap="rnd"' : '';
+    const capAttr = shapeStyle.geometry === 'line' ? ' cap="rnd"' : '';
     borderXml = `<a:ln w="${borderEmu}"${capAttr}><a:solidFill><a:srgbClr val="${shapeStyle.borderColor}"/></a:solidFill></a:ln>`;
   }
 
@@ -97,9 +261,7 @@ export function compileContainerShape(node: IRNode, id: number): string {
       <a:off x="${x}" y="${y}"/>
       <a:ext cx="${cx}" cy="${cy}"/>
     </a:xfrm>
-    <a:prstGeom prst="${geometry}">
-      ${avLst}
-    </a:prstGeom>
+    ${geometryXml}
     ${fillXml}
     ${borderXml}
     ${effectXml}

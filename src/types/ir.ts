@@ -31,6 +31,18 @@ export interface BoundingBox {
   h: number; // Height (Inches)
 }
 
+export interface GradientStop {
+  position: number; // 0.0 - 1.0 (maps to 0 - 100000 in DrawingML)
+  color: string;    // 6-character uppercase Hex without '#'
+  opacity?: number;
+}
+
+export interface GradientFill {
+  type: 'linear' | 'radial';
+  angle?: number;   // Angle in degrees (e.g. 90 = left-to-right, 180 = top-to-bottom)
+  stops: GradientStop[];
+}
+
 /**
  * Visual styling for rectangular containers and shapes.
  */
@@ -44,6 +56,9 @@ export interface ShapeStyle {
   geometry?: string;      // OpenXML preset geometry (e.g. 'rect', 'roundRect', 'ellipse', 'line')
   flipV?: boolean;        // Vertical flip for lines / shapes
   flipH?: boolean;        // Horizontal flip for lines / shapes
+  gradient?: GradientFill;// Linear or radial gradient fill
+  customPath?: string;    // SVG path string (e.g. 'M10 20 L30 40 Z') for <a:custGeom>
+  pathViewBox?: { w: number; h: number }; // Original viewBox width & height for scaling custom path
   shadow?: {
     color: string;
     blur: number;
@@ -94,6 +109,38 @@ export interface TextStyle {
 }
 
 /**
+ * Table cell representation for OpenXML native table (<a:tc>).
+ */
+export interface TableCellIR {
+  content?: string;
+  paragraphs?: ParagraphIR[];
+  fillColor?: string;
+  fillOpacity?: number;
+  borderColor?: string;
+  borderWidth?: number;
+  colSpan?: number;
+  rowSpan?: number;
+  align?: TextAlign;
+  verticalAlign?: 'top' | 'middle' | 'bottom';
+}
+
+/**
+ * Table row representation for OpenXML native table (<a:tr>).
+ */
+export interface TableRowIR {
+  height: number; // Row height in inches
+  cells: TableCellIR[];
+}
+
+/**
+ * Native OpenXML Table structure (<a:tbl>).
+ */
+export interface TableIR {
+  columns: { width: number }[]; // Column widths in inches
+  rows: TableRowIR[];
+}
+
+/**
  * Primary Abstract Syntax Tree (AST) node.
  */
 export interface IRNode {
@@ -105,6 +152,9 @@ export interface IRNode {
 
   // Container shape properties
   shapeStyle?: ShapeStyle;
+
+  // Native table data
+  table?: TableIR;
 
   // Single-run / flat text properties
   content?: string;
