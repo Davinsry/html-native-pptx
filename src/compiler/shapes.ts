@@ -23,17 +23,19 @@ export function compileContainerShape(node: IRNode, id: number): string {
 
   const shapeStyle = node.shapeStyle || {};
 
-  // Geometry: check border-radius
-  let geometry = 'rect';
+  // Geometry: check explicit geometry or border-radius
+  let geometry = shapeStyle.geometry || 'rect';
   let avLst = '<a:avLst/>';
 
-  if (shapeStyle.radius && shapeStyle.radius > 0) {
+  if (!shapeStyle.geometry && shapeStyle.radius && shapeStyle.radius > 0) {
     const wPx = node.box.w * UNITS.DPI;
     const hPx = node.box.h * UNITS.DPI;
     const minDimensionPx = Math.min(wPx, hPx);
 
-    // Kalau radius >= setengah sisi terpendek, pakai ellipse (lingkaran penuh)
-    if (minDimensionPx > 0 && shapeStyle.radius >= (minDimensionPx / 2) - 0.5) {
+    // Pakai ellipse HANYA jika bentuknya bujur sangkar / lingkaran penuh (w == h).
+    // Untuk tombol/badge kapsul (pill shape), gunakan roundRect dengan adj guide penuh.
+    const isSquare = Math.abs(wPx - hPx) <= 2;
+    if (isSquare && minDimensionPx > 0 && shapeStyle.radius >= (minDimensionPx / 2) - 0.5) {
       geometry = 'ellipse';
       avLst = '<a:avLst/>';
     } else {
@@ -45,7 +47,7 @@ export function compileContainerShape(node: IRNode, id: number): string {
 
   // Fill
   let fillXml = '<a:noFill/>';
-  if (shapeStyle.fillColor) {
+  if (geometry !== 'line' && shapeStyle.fillColor) {
     const opacityVal =
       shapeStyle.fillOpacity !== undefined && shapeStyle.fillOpacity < 1
         ? `<a:alpha val="${Math.round(shapeStyle.fillOpacity * 100000)}"/>`
@@ -57,8 +59,31 @@ export function compileContainerShape(node: IRNode, id: number): string {
   let borderXml = '';
   if (shapeStyle.borderColor && shapeStyle.borderWidth && shapeStyle.borderWidth > 0) {
     const borderEmu = Math.round(shapeStyle.borderWidth * 12700); // 1 pt = 12,700 EMU
-    borderXml = `<a:ln w="${borderEmu}"><a:solidFill><a:srgbClr val="${shapeStyle.borderColor}"/></a:solidFill></a:ln>`;
+    const capAttr = geometry === 'line' ? ' cap="rnd"' : '';
+    borderXml = `<a:ln w="${borderEmu}"${capAttr}><a:solidFill><a:srgbClr val="${shapeStyle.borderColor}"/></a:solidFill></a:ln>`;
   }
+
+  // Shadow (Effect)
+  let effectXml = '';
+  if (shapeStyle.shadow) {
+    const blurRad = Math.round((shapeStyle.shadow.blur || 0) * 12700);
+    const offX = shapeStyle.shadow.offsetX || 0;
+    const offY = shapeStyle.shadow.offsetY || 0;
+    const dist = Math.round(Math.hypot(offX, offY) * 12700);
+    const angleDeg = (Math.atan2(offY, offX) * 180) / Math.PI;
+    const dir = Math.round((((angleDeg % 360) + 360) % 360) * 60000);
+    const opacityVal =
+      shapeStyle.shadow.opacity !== undefined && shapeStyle.shadow.opacity < 1
+        ? `<a:alpha val="${Math.round(shapeStyle.shadow.opacity * 100000)}"/>`
+        : '';
+    effectXml = `<a:effectLst><a:outerShdw blurRad="${blurRad}" dist="${dist}" dir="${dir}"><a:srgbClr val="${shapeStyle.shadow.color}">${opacityVal}</a:srgbClr></a:outerShdw></a:effectLst>`;
+  }
+
+  const flips = [
+    shapeStyle.flipH ? 'flipH="1"' : '',
+    shapeStyle.flipV ? 'flipV="1"' : '',
+  ].filter(Boolean).join(' ');
+  const xfrmFlips = flips ? ` ${flips}` : '';
 
   return `
 <p:sp>
@@ -68,7 +93,7 @@ export function compileContainerShape(node: IRNode, id: number): string {
     <p:nvPr/>
   </p:nvSpPr>
   <p:spPr>
-    <a:xfrm>
+    <a:xfrm${xfrmFlips}>
       <a:off x="${x}" y="${y}"/>
       <a:ext cx="${cx}" cy="${cy}"/>
     </a:xfrm>
@@ -77,6 +102,7 @@ export function compileContainerShape(node: IRNode, id: number): string {
     </a:prstGeom>
     ${fillXml}
     ${borderXml}
+    ${effectXml}
   </p:spPr>
 </p:sp>`.trim();
 }

@@ -41,6 +41,9 @@ export interface ShapeStyle {
   borderWidth?: number;   // Points (pt)
   borderStyle?: 'solid' | 'dashed' | 'dotted';
   radius?: number;        // Border radius in pixels (converted to OpenXML adj in compiler)
+  geometry?: string;      // OpenXML preset geometry (e.g. 'rect', 'roundRect', 'ellipse', 'line')
+  flipV?: boolean;        // Vertical flip for lines / shapes
+  flipH?: boolean;        // Horizontal flip for lines / shapes
   shadow?: {
     color: string;
     blur: number;

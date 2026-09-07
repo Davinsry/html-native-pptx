@@ -1,6 +1,6 @@
 {
   "name": "html-native-pptx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Convert HTML/CSS layouts into native, fully-editable OpenXML PowerPoint (.pptx) presentations",
   "author": "Davin Surya",
   "license": "MIT",

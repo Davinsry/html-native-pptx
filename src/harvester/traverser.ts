@@ -1,4 +1,4 @@
-import type { IRNode, SlideIR, TextRun, ParagraphIR, TextAlign } from '../types/ir.js';
+import type { IRNode, SlideIR, TextRun, ParagraphIR, TextAlign, ShapeStyle } from '../types/ir.js';
 
 export interface HarvestOptions {
   selector?: string;
@@ -98,9 +98,19 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
   }
 
   function isTextBlockTag(tagName: string): boolean {
-    return ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE'].includes(
-      tagName
-    );
+    return [
+      'P',
+      'H1',
+      'H2',
+      'H3',
+      'H4',
+      'H5',
+      'H6',
+      'LI',
+      'BLOCKQUOTE',
+      'TEXT',
+      'TSPAN',
+    ].includes(tagName);
   }
 
   // Root selector
@@ -261,6 +271,16 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
         if (text && text.length > 0) {
           const parent = node.parentElement || parentEl;
           const style = window.getComputedStyle(parent);
+          const isSvgParent =
+            parent instanceof SVGElement ||
+            parent.namespaceURI === 'http://www.w3.org/2000/svg';
+          const fillVal = isSvgParent
+            ? style.fill || parent.getAttribute('fill')
+            : undefined;
+          const fillHex =
+            fillVal && fillVal !== 'none' ? toHex(fillVal) : undefined;
+          const textColor = fillHex || toHex(style.color) || '000000';
+
           // Normalize sequences of whitespace to a single space
           const normalized = text.replace(/[\r\n\t ]+/g, ' ');
           if (normalized.length > 0) {
@@ -268,7 +288,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
               content: normalized,
               fontFamily: cleanFontFamily(style.fontFamily),
               fontSize: parseFloat(style.fontSize) * PX_TO_PT,
-              color: toHex(style.color) || '000000',
+              color: textColor,
               bold: isBold(style.fontWeight),
               italic: style.fontStyle === 'italic' || style.fontStyle === 'oblique',
               underline: style.textDecorationLine?.includes('underline'),
@@ -365,8 +385,27 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
       return;
     }
 
+    const tagName = el.tagName.toUpperCase();
+    const isSvg =
+      el instanceof SVGElement ||
+      el.namespaceURI === 'http://www.w3.org/2000/svg';
+
+    if (
+      isSvg &&
+      ['DEFS', 'STYLE', 'FILTER', 'MASK', 'CLIPPATH'].includes(tagName)
+    ) {
+      return;
+    }
+
     const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+    const isZeroLengthLine =
+      tagName === 'LINE' && rect.width === 0 && rect.height === 0;
+    if (
+      isZeroLengthLine ||
+      (tagName !== 'LINE' && (rect.width === 0 || rect.height === 0))
+    ) {
+      return;
+    }
 
     // Normalisasi koordinat ke Inches relatif terhadap root container
     const box = {
@@ -425,6 +464,194 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     const zIndex =
       style.zIndex === 'auto' || !style.zIndex ? 0 : parseInt(style.zIndex, 10) || 0;
 
+    // SVG Shape handling (rect, circle, ellipse, line, path, polygon, polyline)
+    if (isSvg) {
+      if (tagName === 'RECT') {
+        const fillRaw = style.fill || el.getAttribute('fill');
+        const strokeRaw = style.stroke || el.getAttribute('stroke');
+        const strokeWidthRaw =
+          parseFloat(style.strokeWidth) ||
+          parseFloat(el.getAttribute('stroke-width') || '0') ||
+          0;
+
+        const fillParsed =
+          fillRaw && fillRaw !== 'none' ? parseColor(fillRaw) : undefined;
+        const strokeParsed =
+          strokeRaw && strokeRaw !== 'none' && strokeWidthRaw > 0
+            ? parseColor(strokeRaw)
+            : undefined;
+
+        const rxAttr = parseFloat(el.getAttribute('rx') || '0') || 0;
+        const wAttr = parseFloat(el.getAttribute('width') || '1') || 1;
+        const radiusPx = rxAttr > 0 ? (rxAttr / wAttr) * rect.width : 0;
+
+        let shadowObj: ShapeStyle['shadow'] = undefined;
+        const filterAttr = el.getAttribute('filter');
+        if (filterAttr) {
+          const match = filterAttr.match(/url\(#([^)]+)\)/);
+          if (match) {
+            const filterEl = el.ownerDocument.getElementById(match[1]);
+            if (filterEl) {
+              const dropShadow = filterEl.querySelector('feDropShadow');
+              if (dropShadow) {
+                const dx = parseFloat(dropShadow.getAttribute('dx') || '0') || 0;
+                const dy = parseFloat(dropShadow.getAttribute('dy') || '0') || 0;
+                const stdDev =
+                  parseFloat(dropShadow.getAttribute('stdDeviation') || '0') || 0;
+                const floodColor =
+                  dropShadow.getAttribute('flood-color') || '#000000';
+                const floodOpacity = parseFloat(
+                  dropShadow.getAttribute('flood-opacity') || '1'
+                );
+                const colorParsed = parseColor(floodColor);
+                if (colorParsed) {
+                  shadowObj = {
+                    color: colorParsed.hex,
+                    blur: stdDev * PX_TO_PT,
+                    offsetX: dx * PX_TO_PT,
+                    offsetY: dy * PX_TO_PT,
+                    opacity: isNaN(floodOpacity) ? 1 : floodOpacity,
+                  };
+                }
+              }
+            }
+          }
+        }
+
+        if (fillParsed || strokeParsed) {
+          nodes.push({
+            id: nodeIdCounter++,
+            name: 'svg-rect',
+            type: 'container',
+            box,
+            zIndex,
+            shapeStyle: {
+              fillColor: fillParsed?.hex,
+              fillOpacity: fillParsed?.alpha,
+              borderColor: strokeParsed?.hex,
+              borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+              radius: radiusPx,
+              shadow: shadowObj,
+            },
+          });
+        }
+        return;
+      }
+
+      if (tagName === 'CIRCLE' || tagName === 'ELLIPSE') {
+        const fillRaw = style.fill || el.getAttribute('fill');
+        const strokeRaw = style.stroke || el.getAttribute('stroke');
+        const strokeWidthRaw =
+          parseFloat(style.strokeWidth) ||
+          parseFloat(el.getAttribute('stroke-width') || '0') ||
+          0;
+
+        const fillParsed =
+          fillRaw && fillRaw !== 'none' ? parseColor(fillRaw) : undefined;
+        const strokeParsed =
+          strokeRaw && strokeRaw !== 'none' && strokeWidthRaw > 0
+            ? parseColor(strokeRaw)
+            : undefined;
+
+        if (fillParsed || strokeParsed) {
+          nodes.push({
+            id: nodeIdCounter++,
+            name: 'svg-circle',
+            type: 'container',
+            box,
+            zIndex,
+            shapeStyle: {
+              geometry: 'ellipse',
+              fillColor: fillParsed?.hex,
+              fillOpacity: fillParsed?.alpha,
+              borderColor: strokeParsed?.hex,
+              borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+              radius: Math.min(rect.width, rect.height) / 2,
+            },
+          });
+        }
+        return;
+      }
+
+      if (tagName === 'LINE') {
+        const strokeRaw =
+          style.stroke || el.getAttribute('stroke') || '#000000';
+        const strokeWidthRaw =
+          parseFloat(style.strokeWidth) ||
+          parseFloat(el.getAttribute('stroke-width') || '1') ||
+          1;
+        const strokeParsed =
+          strokeRaw && strokeRaw !== 'none' ? parseColor(strokeRaw) : undefined;
+
+        const x1 = parseFloat(el.getAttribute('x1') || '0');
+        const y1 = parseFloat(el.getAttribute('y1') || '0');
+        const x2 = parseFloat(el.getAttribute('x2') || '0');
+        const y2 = parseFloat(el.getAttribute('y2') || '0');
+
+        const isFlippedV =
+          (y2 < y1 && x2 >= x1) || (y1 < y2 && x1 >= x2);
+
+        if (strokeParsed) {
+          nodes.push({
+            id: nodeIdCounter++,
+            name: 'svg-line',
+            type: 'container',
+            box: {
+              x: box.x,
+              y: box.y,
+              w: box.w,
+              h: box.h,
+            },
+            zIndex,
+            shapeStyle: {
+              geometry: 'line',
+              flipV: isFlippedV,
+              borderColor: strokeParsed.hex,
+              borderWidth: strokeWidthRaw * PX_TO_PT,
+            },
+          });
+        }
+        return;
+      }
+
+      if (
+        tagName === 'PATH' ||
+        tagName === 'POLYGON' ||
+        tagName === 'POLYLINE'
+      ) {
+        const fillRaw = style.fill || el.getAttribute('fill');
+        const strokeRaw = style.stroke || el.getAttribute('stroke');
+        const strokeWidthRaw =
+          parseFloat(style.strokeWidth) ||
+          parseFloat(el.getAttribute('stroke-width') || '0') ||
+          0;
+
+        const fillParsed =
+          fillRaw && fillRaw !== 'none' ? parseColor(fillRaw) : undefined;
+        const strokeParsed =
+          strokeRaw && strokeRaw !== 'none' && strokeWidthRaw > 0
+            ? parseColor(strokeRaw)
+            : undefined;
+
+        if (fillParsed || strokeParsed) {
+          nodes.push({
+            id: nodeIdCounter++,
+            name: `svg-${tagName.toLowerCase()}`,
+            type: 'container',
+            box,
+            zIndex,
+            shapeStyle: {
+              fillColor: fillParsed?.hex,
+              fillOpacity: fillParsed?.alpha,
+              borderColor: strokeParsed?.hex,
+              borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+            },
+          });
+        }
+        return;
+      }
+    }
+
     // Lingkaran/cincin yang digambar lewat radial-gradient pada latar elemen.
     // Dikeluarkan sebelum kotaknya sendiri supaya tergambar di atasnya, sama
     // seperti urutan lapisan latar di CSS.
@@ -465,6 +692,41 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
 
     // 1. Jika elemen memiliki visual background atau 4 border yang sama
     if (hasBg || allBordersEqual) {
+      let boxHtmlShadow: ShapeStyle['shadow'] = undefined;
+      if (style.boxShadow && style.boxShadow !== 'none') {
+        const m = style.boxShadow.match(
+          /(rgba?\([^)]+\)|#[0-9a-fA-F]+)\s+(-?[\d.]+)px\s+(-?[\d.]+)px\s+([\d.]+)px/
+        );
+        if (m) {
+          const c = parseColor(m[1]);
+          if (c) {
+            boxHtmlShadow = {
+              color: c.hex,
+              offsetX: parseFloat(m[2]) * PX_TO_PT,
+              offsetY: parseFloat(m[3]) * PX_TO_PT,
+              blur: parseFloat(m[4]) * PX_TO_PT,
+              opacity: c.alpha,
+            };
+          }
+        } else {
+          const m2 = style.boxShadow.match(
+            /(-?[\d.]+)px\s+(-?[\d.]+)px\s+([\d.]+)px\s+(rgba?\([^)]+\)|#[0-9a-fA-F]+)/
+          );
+          if (m2) {
+            const c = parseColor(m2[4]);
+            if (c) {
+              boxHtmlShadow = {
+                color: c.hex,
+                offsetX: parseFloat(m2[1]) * PX_TO_PT,
+                offsetY: parseFloat(m2[2]) * PX_TO_PT,
+                blur: parseFloat(m2[3]) * PX_TO_PT,
+                opacity: c.alpha,
+              };
+            }
+          }
+        }
+      }
+
       nodes.push({
         id: nodeIdCounter++,
         name: `${el.tagName.toLowerCase()}-box`,
@@ -477,6 +739,7 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
           borderColor: allBordersEqual ? btColor : undefined,
           borderWidth: allBordersEqual ? btW * PX_TO_PT : 0,
           radius: radiusPx,
+          shadow: boxHtmlShadow,
         },
       });
     }
@@ -598,7 +861,14 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     const isLeafText = el.childElementCount === 0 && hasText;
 
     if (hasText && (isExplicitTextBlock || isLeafText || hasOnlyInlineChildren)) {
-      const textAlign = (style.textAlign as any) || 'left';
+      let textAlign: TextAlign = (style.textAlign as any) || 'left';
+      if (isSvg) {
+        const anchor =
+          (style as any).textAnchor || el.getAttribute('text-anchor');
+        if (anchor === 'middle') textAlign = 'center';
+        else if (anchor === 'end') textAlign = 'right';
+        else if (anchor === 'start') textAlign = 'left';
+      }
       const paragraphs = collectParagraphs(el, textAlign);
 
       // Rasio, bukan piksel: OpenXML menyatakan jarak baris sebagai persentase
