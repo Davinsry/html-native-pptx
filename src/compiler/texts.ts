@@ -85,13 +85,23 @@ export function compileTextShape(
   id: number,
   autofit: 'none' | 'shape' | 'text' = 'none'
 ): string {
-  // Teks yang di browser muat satu baris dipaksa tetap satu baris: kotaknya
-  // persis selebar teksnya, jadi selisih metrik sekecil apa pun akan
-  // membungkusnya dan merusak tata letak yang justru sedang dipertahankan.
-  const wrapMode = node.noWrap ? 'none' : 'square';
+  // Teks yang di browser muat satu baris dulu dipaksa `wrap="none"` supaya
+  // selisih metrik sekecil apa pun tidak membungkusnya. Akibatnya baru
+  // terlihat setelah dirender: `wrap="none"` juga berarti teks TIDAK PERNAH
+  // dibatasi kotaknya, jadi begitu font PowerPoint sedikit lebih lebar,
+  // kalimatnya memanjang keluar dari kartu yang menaunginya. Diukur pada satu
+  // dek nyata, kotak judul memang sudah berakhir 2 px di luar kartunya sejak
+  // di browser -- selisih 2 px itu yang berubah jadi luberan puluhan piksel.
+  //
+  // Sekarang pembungkusan dibiarkan hidup, dengan kelonggaran lebar secukupnya
+  // untuk menyerap selisih metrik. Judul yang tetap tidak muat akan membungkus
+  // ke baris kedua DI DALAM kartunya -- kurang rapi, tapi terkurung. Teks yang
+  // meluber keluar kartu selalu lebih buruk daripada teks yang membungkus.
+  const wrapMode = 'square';
   const x = inchesToEmu(node.box.x);
   const y = inchesToEmu(node.box.y);
-  const cx = inchesToEmu(node.box.w);
+  const METRIC_SLACK = 1.06;
+  const cx = inchesToEmu(node.noWrap ? node.box.w * METRIC_SLACK : node.box.w);
   const cy = inchesToEmu(node.box.h);
   const name = escapeXml(node.name || `Text ${id}`);
 
