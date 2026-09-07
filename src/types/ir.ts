@@ -58,7 +58,22 @@ export interface ShapeStyle {
   flipH?: boolean;        // Horizontal flip for lines / shapes
   gradient?: GradientFill;// Linear or radial gradient fill
   customPath?: string;    // SVG path string (e.g. 'M10 20 L30 40 Z') for <a:custGeom>
-  pathViewBox?: { w: number; h: number }; // Original viewBox width & height for scaling custom path
+  /**
+   * Coordinate space the custom path is drawn in, in SVG user units.
+   *
+   * This is the element's OWN bounding box, not the <svg> viewBox. DrawingML
+   * stretches a path's declared space to fill the shape frame, and the frame
+   * is the element's bounding box -- so declaring the whole viewBox here
+   * squashes every path into a fraction of its intended size and position.
+   */
+  pathViewBox?: { w: number; h: number };
+  /** Top-left of that bounding box, subtracted from every point so the path starts at 0,0. */
+  pathOrigin?: { x: number; y: number };
+  /** SVG marker-start / marker-end, compiled to DrawingML line ends. */
+  startArrow?: boolean;
+  endArrow?: boolean;
+  /** SVG stroke-dasharray; only presence matters, DrawingML has preset dashes. */
+  dashed?: boolean;
   shadow?: {
     color: string;
     blur: number;

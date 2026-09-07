@@ -464,21 +464,44 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
     }
 
     const rect = el.getBoundingClientRect();
-    const isZeroLengthLine =
-      tagName === 'LINE' && rect.width === 0 && rect.height === 0;
-    if (
-      isZeroLengthLine ||
-      (tagName !== 'LINE' && (rect.width === 0 || rect.height === 0))
-    ) {
+    // Bentuk SVG boleh berukuran nol pada SATU sumbu: konektor mendatar atau
+    // tegak -- bentuk paling lazim di flowchart -- memang setinggi/selebar nol
+    // sebelum garisnya digambar. Aturan "salah satu sisi nol berarti buang"
+    // membuang justru panah-panah penghubungnya. Yang benar-benar kosong
+    // (kedua sisi nol) tetap dibuang.
+    const isSvgGeometry =
+      isSvg &&
+      (tagName === 'LINE' ||
+        tagName === 'PATH' ||
+        tagName === 'POLYGON' ||
+        tagName === 'POLYLINE');
+    const kosong = isSvgGeometry
+      ? rect.width === 0 && rect.height === 0
+      : rect.width === 0 || rect.height === 0;
+    if (kosong) {
       return;
     }
 
     // Normalisasi koordinat ke Inches relatif terhadap root container
+    // Konektor mendatar/tegak punya salah satu sisi nol, dan bingkai shape
+    // setinggi nol tidak menggambar apa pun. Sisi itu ditebalkan seukuran
+    // garisnya -- itu memang ruang yang ditempati garisnya di layar.
+    let rectW = rect.width;
+    let rectH = rect.height;
+    if (isSvgGeometry) {
+      const sw =
+        parseFloat(style.strokeWidth) ||
+        parseFloat(el.getAttribute('stroke-width') || '0') ||
+        1;
+      if (rectW === 0) rectW = sw;
+      if (rectH === 0) rectH = sw;
+    }
+
     const box = {
       x: ((rect.left - rootRect.left) / rootW) * SLIDE_W,
       y: ((rect.top - rootRect.top) / rootH) * SLIDE_H,
-      w: (rect.width / rootW) * SLIDE_W,
-      h: (rect.height / rootH) * SLIDE_H,
+      w: (rectW / rootW) * SLIDE_W,
+      h: (rectH / rootH) * SLIDE_H,
     };
 
     const zIndex =
@@ -630,6 +653,42 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
 
     // SVG Shape handling (rect, circle, ellipse, line, path, polygon, polyline)
     if (isSvg) {
+      /**
+       * Coordinate space for a path-like SVG element, in its own user units.
+       *
+       * DrawingML stretches a path's declared space to fill the shape frame,
+       * and the frame is this element's bounding box. Declaring the whole
+       * <svg> viewBox instead squashes the path into a corner of its own
+       * shape -- which is what made connectors come out as stubs.
+       *
+       * getBBox() excludes the stroke while the shape frame (getBoundingClientRect)
+       * includes it, so the box is grown by half the stroke on each side to
+       * make the two agree.
+       */
+      const pathSpace = (strokeWidthPx: number) => {
+        const g = el as unknown as SVGGraphicsElement;
+        if (typeof g.getBBox !== 'function') return null;
+        let bb: DOMRect;
+        try {
+          bb = g.getBBox();
+        } catch {
+          return null; // elemen tak tergambar; biarkan pemanggil melewatinya
+        }
+        const pad = (strokeWidthPx || 0) / 2;
+        const w = bb.width + strokeWidthPx;
+        const h = bb.height + strokeWidthPx;
+        if (!(w > 0) || !(h > 0)) return null;
+        return { origin: { x: bb.x - pad, y: bb.y - pad }, size: { w, h } };
+      };
+
+      const hasMarker = (name: string) =>
+        !!(el.getAttribute(name) || '').trim() &&
+        (el.getAttribute(name) || '').trim() !== 'none';
+      const markerStart = hasMarker('marker-start');
+      const markerEnd = hasMarker('marker-end');
+      const dashed = !!(
+        el.getAttribute('stroke-dasharray') || style.strokeDasharray
+      )?.replace(/none/i, '').trim();
       if (tagName === 'RECT') {
         const fillRaw = style.fill || el.getAttribute('fill');
         const strokeRaw = style.stroke || el.getAttribute('stroke');
@@ -772,6 +831,9 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
               flipV: isFlippedV,
               borderColor: strokeParsed.hex,
               borderWidth: strokeWidthRaw * PX_TO_PT,
+              startArrow: markerStart,
+              endArrow: markerEnd,
+              dashed,
             },
           });
         }
@@ -794,24 +856,8 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             ? parseColor(strokeRaw)
             : undefined;
 
-        if (d && d.trim().length > 0 && (fillParsed || strokeParsed)) {
-          const svgRoot = el.closest('svg');
-          let vbW = 100;
-          let vbH = 100;
-          if (svgRoot) {
-            const vbAttr = svgRoot.getAttribute('viewBox');
-            if (vbAttr) {
-              const vbParts = vbAttr.trim().split(/[\s,]+/);
-              if (vbParts.length >= 4) {
-                vbW = parseFloat(vbParts[2]) || 100;
-                vbH = parseFloat(vbParts[3]) || 100;
-              }
-            } else {
-              vbW = parseFloat(svgRoot.getAttribute('width') || '100') || 100;
-              vbH = parseFloat(svgRoot.getAttribute('height') || '100') || 100;
-            }
-          }
-
+        const space = pathSpace(strokeWidthRaw);
+        if (d && d.trim().length > 0 && space && (fillParsed || strokeParsed)) {
           nodes.push({
             id: nodeIdCounter++,
             name: 'svg-path',
@@ -820,11 +866,15 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             zIndex,
             shapeStyle: {
               customPath: d,
-              pathViewBox: { w: vbW, h: vbH },
+              pathViewBox: space.size,
+              pathOrigin: space.origin,
               fillColor: fillParsed?.hex,
               fillOpacity: fillParsed?.alpha,
               borderColor: strokeParsed?.hex,
               borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+              startArrow: markerStart,
+              endArrow: markerEnd,
+              dashed,
             },
           });
           return;
@@ -849,7 +899,24 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             ? parseColor(strokeRaw)
             : undefined;
 
-        if (fillParsed || strokeParsed) {
+        // `points` diubah jadi jalur agar bentuknya benar-benar tergambar.
+        // Tanpa ini node-nya lahir tanpa customPath, dan kompiler menggambarnya
+        // sebagai persegi -- itulah sebabnya belah ketupat decision keluar
+        // sebagai kotak, bentuk yang justru paling menentukan arti flowchart.
+        const pts = (el.getAttribute('points') || '')
+          .trim()
+          .split(/[\s,]+/)
+          .map((n) => parseFloat(n))
+          .filter((n) => !isNaN(n));
+        const space = pathSpace(strokeWidthRaw);
+
+        if (pts.length >= 6 && space && (fillParsed || strokeParsed)) {
+          const seg: string[] = [];
+          for (let p = 0; p + 1 < pts.length; p += 2) {
+            seg.push(`${p === 0 ? 'M' : 'L'} ${pts[p]} ${pts[p + 1]}`);
+          }
+          if (tagName === 'POLYGON') seg.push('Z');
+
           nodes.push({
             id: nodeIdCounter++,
             name: `svg-${tagName.toLowerCase()}`,
@@ -857,10 +924,16 @@ export function extractDomToSlideIR(options: HarvestOptions): SlideIR {
             box,
             zIndex,
             shapeStyle: {
+              customPath: seg.join(' '),
+              pathViewBox: space.size,
+              pathOrigin: space.origin,
               fillColor: fillParsed?.hex,
               fillOpacity: fillParsed?.alpha,
               borderColor: strokeParsed?.hex,
               borderWidth: strokeParsed ? strokeWidthRaw * PX_TO_PT : 0,
+              startArrow: markerStart,
+              endArrow: markerEnd,
+              dashed,
             },
           });
         }

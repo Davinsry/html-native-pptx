@@ -14,7 +14,13 @@ function escapeXml(unsafe: string): string {
 /**
  * Parses an SVG path data string (M... L... C... Q... Z) into OpenXML DrawingML <a:custGeom>.
  */
-export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string {
+export function parseSvgPathToDrawingMl(
+  d: string,
+  vbW = 100,
+  vbH = 100,
+  originX = 0,
+  originY = 0
+): string {
   const commandRegex = /([a-df-z])|([+-]?(?:\d*\.\d+|\d+)(?:[eE][+-]?\d+)?)/gi;
   let match: RegExpExecArray | null;
   const tokens: string[] = [];
@@ -30,7 +36,13 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
   let currentCommand = '';
   const pathElements: string[] = [];
 
+  // Points arrive in the SVG's own user units; the path space declared below is
+  // the element's bounding box. Shifting by that box's origin is what makes the
+  // two agree -- without it every path is drawn relative to the whole canvas
+  // and lands squashed into a corner of its own shape.
   const round = (n: number) => Math.round(n * 100);
+  const rx = (n: number) => round(n - originX);
+  const ry = (n: number) => round(n - originY);
 
   while (i < tokens.length) {
     const token = tokens[i];
@@ -53,7 +65,7 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
       currentY = y;
       startX = x;
       startY = y;
-      pathElements.push(`<a:moveTo><a:pt x="${round(x)}" y="${round(y)}"/></a:moveTo>`);
+      pathElements.push(`<a:moveTo><a:pt x="${rx(x)}" y="${ry(y)}"/></a:moveTo>`);
       currentCommand = isRelative ? 'l' : 'L';
     } else if (cmd === 'L') {
       let x = parseFloat(tokens[i++]);
@@ -64,17 +76,17 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
       }
       currentX = x;
       currentY = y;
-      pathElements.push(`<a:lnTo><a:pt x="${round(x)}" y="${round(y)}"/></a:lnTo>`);
+      pathElements.push(`<a:lnTo><a:pt x="${rx(x)}" y="${ry(y)}"/></a:lnTo>`);
     } else if (cmd === 'H') {
       let x = parseFloat(tokens[i++]);
       if (isRelative) x += currentX;
       currentX = x;
-      pathElements.push(`<a:lnTo><a:pt x="${round(currentX)}" y="${round(currentY)}"/></a:lnTo>`);
+      pathElements.push(`<a:lnTo><a:pt x="${rx(currentX)}" y="${ry(currentY)}"/></a:lnTo>`);
     } else if (cmd === 'V') {
       let y = parseFloat(tokens[i++]);
       if (isRelative) y += currentY;
       currentY = y;
-      pathElements.push(`<a:lnTo><a:pt x="${round(currentX)}" y="${round(currentY)}"/></a:lnTo>`);
+      pathElements.push(`<a:lnTo><a:pt x="${rx(currentX)}" y="${ry(currentY)}"/></a:lnTo>`);
     } else if (cmd === 'C') {
       let x1 = parseFloat(tokens[i++]);
       let y1 = parseFloat(tokens[i++]);
@@ -89,7 +101,7 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
       }
       currentX = x;
       currentY = y;
-      pathElements.push(`<a:cubicBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x2)}" y="${round(y2)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:cubicBezTo>`);
+      pathElements.push(`<a:cubicBezTo><a:pt x="${rx(x1)}" y="${ry(y1)}"/><a:pt x="${rx(x2)}" y="${ry(y2)}"/><a:pt x="${rx(x)}" y="${ry(y)}"/></a:cubicBezTo>`);
     } else if (cmd === 'S') {
       let x2 = parseFloat(tokens[i++]);
       let y2 = parseFloat(tokens[i++]);
@@ -103,7 +115,7 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
       const y1 = currentY;
       currentX = x;
       currentY = y;
-      pathElements.push(`<a:cubicBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x2)}" y="${round(y2)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:cubicBezTo>`);
+      pathElements.push(`<a:cubicBezTo><a:pt x="${rx(x1)}" y="${ry(y1)}"/><a:pt x="${rx(x2)}" y="${ry(y2)}"/><a:pt x="${rx(x)}" y="${ry(y)}"/></a:cubicBezTo>`);
     } else if (cmd === 'Q') {
       let x1 = parseFloat(tokens[i++]);
       let y1 = parseFloat(tokens[i++]);
@@ -115,7 +127,7 @@ export function parseSvgPathToDrawingMl(d: string, vbW = 100, vbH = 100): string
       }
       currentX = x;
       currentY = y;
-      pathElements.push(`<a:quadBezTo><a:pt x="${round(x1)}" y="${round(y1)}"/><a:pt x="${round(x)}" y="${round(y)}"/></a:quadBezTo>`);
+      pathElements.push(`<a:quadBezTo><a:pt x="${rx(x1)}" y="${ry(y1)}"/><a:pt x="${rx(x)}" y="${ry(y)}"/></a:quadBezTo>`);
     } else if (cmd === 'Z') {
       currentX = startX;
       currentY = startY;
@@ -161,7 +173,13 @@ export function compileContainerShape(node: IRNode, id: number): string {
   if (shapeStyle.customPath) {
     const vbW = shapeStyle.pathViewBox?.w || 100;
     const vbH = shapeStyle.pathViewBox?.h || 100;
-    geometryXml = parseSvgPathToDrawingMl(shapeStyle.customPath, vbW, vbH);
+    geometryXml = parseSvgPathToDrawingMl(
+      shapeStyle.customPath,
+      vbW,
+      vbH,
+      shapeStyle.pathOrigin?.x || 0,
+      shapeStyle.pathOrigin?.y || 0
+    );
   } else {
     let geometry = shapeStyle.geometry || 'rect';
     let avLst = '<a:avLst/>';
@@ -224,7 +242,21 @@ export function compileContainerShape(node: IRNode, id: number): string {
   if (shapeStyle.borderColor && shapeStyle.borderWidth && shapeStyle.borderWidth > 0) {
     const borderEmu = Math.round(shapeStyle.borderWidth * 12700); // 1 pt = 12,700 EMU
     const capAttr = shapeStyle.geometry === 'line' ? ' cap="rnd"' : '';
-    borderXml = `<a:ln w="${borderEmu}"${capAttr}><a:solidFill><a:srgbClr val="${shapeStyle.borderColor}"/></a:solidFill></a:ln>`;
+    // A connector without its arrowhead reads as a plain rule, and a rejection
+    // loop without its dashes reads as the happy path -- in a flowchart both
+    // change the meaning of the diagram, not just its looks. DrawingML carries
+    // them as line properties, so they survive as editable shape attributes.
+    const dashXml = shapeStyle.dashed ? '<a:prstDash val="dash"/>' : '';
+    const headXml = shapeStyle.startArrow
+      ? '<a:headEnd type="triangle" w="med" len="med"/>'
+      : '';
+    const tailXml = shapeStyle.endArrow
+      ? '<a:tailEnd type="triangle" w="med" len="med"/>'
+      : '';
+    borderXml =
+      `<a:ln w="${borderEmu}"${capAttr}>` +
+      `<a:solidFill><a:srgbClr val="${shapeStyle.borderColor}"/></a:solidFill>` +
+      `${dashXml}${headXml}${tailXml}</a:ln>`;
   }
 
   // Shadow (Effect)
