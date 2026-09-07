@@ -16,7 +16,7 @@
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "bin": {
-    "html-native-pptx": "./dist/cli.js"
+    "html-native-pptx": "dist/cli.js"
   },
   "exports": {
     ".": {
