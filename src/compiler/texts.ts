@@ -97,11 +97,27 @@ export function compileTextShape(
   // untuk menyerap selisih metrik. Judul yang tetap tidak muat akan membungkus
   // ke baris kedua DI DALAM kartunya -- kurang rapi, tapi terkurung. Teks yang
   // meluber keluar kartu selalu lebih buruk daripada teks yang membungkus.
+  // Kelonggarannya tidak bisa satu angka untuk semua. Kelonggaran 6% menolong
+  // judul panjang, tetapi pada teks yang sangat pendek 6% itu cuma sepersekian
+  // piksel -- nomor langkah "11" pun terbelah menjadi dua baris. Sebaliknya,
+  // memberi semua teks kelonggaran satu em membuat judul panjang boleh melebar
+  // belasan persen, dan luberan itulah yang sedang dihindari.
+  //
+  // Jadi: teks pendek dapat satu em penuh (cukup untuk menampung selisih metrik
+  // seluruh kata, dan luberannya pun sepele karena teksnya pendek), teks
+  // panjang dibatasi 8% (menyerap selisih metrik yang wajar, sisanya membungkus
+  // ke bawah dan tetap terkurung).
   const wrapMode = 'square';
   const x = inchesToEmu(node.box.x);
   const y = inchesToEmu(node.box.y);
-  const METRIC_SLACK = 1.06;
-  const cx = inchesToEmu(node.noWrap ? node.box.w * METRIC_SLACK : node.box.w);
+  const oneEmInches = (node.textStyle?.fontSize || 16) / 72;
+  const isShort = (node.content || '').trim().length <= 6;
+  const slack = node.noWrap
+    ? isShort
+      ? oneEmInches
+      : Math.min(oneEmInches, node.box.w * 0.08)
+    : 0;
+  const cx = inchesToEmu(node.box.w + slack);
   const cy = inchesToEmu(node.box.h);
   const name = escapeXml(node.name || `Text ${id}`);
 
