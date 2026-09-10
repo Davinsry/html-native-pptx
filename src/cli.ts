@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   const html = fs.readFileSync(resolvedInput, 'utf-8');
   const buffer = await convertHtmlToPptx(html, {
     aspect,
-    selector,
+    slideSelector: selector,
     viewport: { width: viewportWidth, height: viewportHeight },
     basePath: path.dirname(resolvedInput),
   });
